@@ -1,0 +1,21 @@
+{
+    "name": "studio.tgs.audioimporter.editor",
+    "rootNamespace": "studio.tgs.audioimporter.editor",
+    "references": [
+        "GUID:7587e79dba767974180aaa071919b937",
+        "GUID:eddc24eca6301ba4193fbddf2fc974a5",
+        "GUID:7e981f8c8eff5584da51f81c4d068ff1",
+        "GUID:608e0ed4ad29b07468648060ceefb69e"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

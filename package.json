@@ -1,0 +1,10 @@
+{
+  "name": "com.tgs.sonity-audio-importer",
+  "version": "1.0.0",
+  "displayName": "Sonity Audio Importer",
+  "description": "Sonity Audio Importer",
+  "unity": "2020.3",
+  "author": {
+    "name": "Karina Yumi da Cruz"
+  }
+}
