@@ -1,0 +1,10 @@
+{
+  "name": "com.tgs.spine-handler.editor",
+  "rootNamespace": "com.tgs.spine-handler.editor",
+  "references": [
+    "com.tgs.spine-handler"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ]
+}
