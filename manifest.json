@@ -6,8 +6,5 @@
     "name": "TGS Gaming Tool Repository",
     "defaultBranch": "main",
     "description": "Example TGS tools manifest for Unity packages."
-  },
-  "packages": [
-    "com.tgs.template"
-  ]
+  }
 }
