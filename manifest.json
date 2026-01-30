@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-01-29",
+  "repository": {
+    "owner": "TGS Gaming",
+    "name": "TGS Gaming Tool Repository",
+    "defaultBranch": "main",
+    "description": "Example TGS tools manifest for Unity packages."
+  },
+  "packages": [
+    "com.tgs.template",
+  ]
+}
