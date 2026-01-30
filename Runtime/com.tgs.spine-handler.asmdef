@@ -1,4 +1,18 @@
 {
-  "name": "com.tgs.spine-handler",
-  "rootNamespace": "com.tgs.spine-handler"
+    "name": "com.tgs.spine-handler",
+    "rootNamespace": "com.tgs.spinehandler",
+    "references": [
+        "GUID:09096e98baace8243b4a838f06c06083",
+        "GUID:7e981f8c8eff5584da51f81c4d068ff1",
+        "GUID:7b3aa86ab4defa84a8b710a95f3ee215"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
 }

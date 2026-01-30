@@ -1,10 +1,18 @@
 {
-  "name": "com.tgs.spine-handler.editor",
-  "rootNamespace": "com.tgs.spine-handler.editor",
-  "references": [
-    "com.tgs.spine-handler"
-  ],
-  "includePlatforms": [
-    "Editor"
-  ]
+    "name": "com.tgs.spine-handler.editor",
+    "rootNamespace": "com.tgs.spinehandler.editor",
+    "references": [
+        "com.tgs.spine-handler"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
 }
