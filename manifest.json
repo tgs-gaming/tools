@@ -8,6 +8,6 @@
     "description": "Example TGS tools manifest for Unity packages."
   },
   "packages": [
-    "com.tgs.template",
+    "com.tgs.template"
   ]
 }
