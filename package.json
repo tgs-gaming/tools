@@ -1,6 +1,6 @@
 {
   "name": "com.tgs.template",
-  "version": "1.6.0",
+  "version": "1.8.0",
   "displayName": "TGS Template Package",
   "description": "Demo package Template with a simple runtime service and editor window.",
   "unity": "2020.3",
