@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.5 - 2026-02-02
+- Adicionado outro teste
+- Corrigidos bugs importantes
+
+
 ## 1.8.0 - 2026-02-02
 - Teste para 1.8.0
 
