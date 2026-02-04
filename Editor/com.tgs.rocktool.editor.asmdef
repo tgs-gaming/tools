@@ -1,0 +1,10 @@
+{
+  "name": "com.tgs.rocktool.editor",
+  "rootNamespace": "com.tgs.rocktool.editor",
+  "references": [
+    "com.tgs.rocktool"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "com.tgs.rocktool",
+  "version": "1.5.0",
+  "displayName": "RockTool",
+  "description": "Shows a Rock",
+  "unity": "2020.3",
+  "author": {
+    "name": "Rock"
+  }
+}
