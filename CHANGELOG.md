@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9.0 - 2026-02-06
+- Added License file
+
+
 ## 1.8.5 - 2026-02-02
 - Adicionado outro teste
 - Corrigidos bugs importantes
