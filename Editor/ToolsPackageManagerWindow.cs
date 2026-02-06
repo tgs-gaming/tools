@@ -5,6 +5,8 @@ using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEditor;
+using UnityEditor.PackageManager;
+using UnityEditor.PackageManager.Requests;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -42,6 +44,7 @@ namespace com.tgs.packagemanager.editor
         private string _gitHubToken;
         private string _repoUrl;
         private string _statusMessage;
+        private string _lastUpmUrl;
         private bool _isBusy;
         private Vector2 _scroll;
         private int _selectedTab;
@@ -60,6 +63,7 @@ namespace com.tgs.packagemanager.editor
         private readonly Dictionary<string, bool> _pendingCommitCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, bool> _gitInitializedCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _gitHeadCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _gitHeadMessageCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, bool> _gitDetachedCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, bool> _remoteExistsCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _remoteUrlCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -348,12 +352,15 @@ namespace com.tgs.packagemanager.editor
                     continue;
                 }
 
+                var isUpmInstalled = item.IsUpmInstalled;
+                var upmVersion = item.UpmVersion;
+
                 var previousColor = GUI.backgroundColor;
                 if (item.IsLocalOnly)
                 {
                     GUI.backgroundColor = LocalOnlyPackageColor;
                 }
-                else if (item.IsInstalled)
+                else if (item.IsInstalled || isUpmInstalled)
                 {
                     GUI.backgroundColor = InstalledPackageColor;
                 }
@@ -364,11 +371,28 @@ namespace com.tgs.packagemanager.editor
                     EditorGUI.DrawRect(new Rect(lineRect.x, lineRect.y, lineRect.width, 1f),
                         new Color(0.35f, 0.35f, 0.35f, 1f));
 
-                    var titleStyle = new GUIStyle(EditorStyles.boldLabel)
+                    using (new EditorGUILayout.HorizontalScope())
                     {
-                        fontSize = EditorStyles.boldLabel.fontSize + 2
-                    };
-                    EditorGUILayout.LabelField(package.displayName ?? package.id, titleStyle);
+                        var titleStyle = new GUIStyle(EditorStyles.boldLabel)
+                        {
+                            fontSize = EditorStyles.boldLabel.fontSize + 2
+                        };
+                        EditorGUILayout.LabelField(package.displayName ?? package.id, titleStyle);
+                        GUILayout.FlexibleSpace();
+                        if (isUpmInstalled)
+                        {
+                            var previousBg = GUI.backgroundColor;
+                            GUI.backgroundColor = Color.red;
+                            var tagStyle = new GUIStyle("box")
+                            {
+                                alignment = TextAnchor.MiddleCenter,
+                                fontSize = EditorStyles.miniBoldLabel.fontSize,
+                                normal = { textColor = Color.white }
+                            };
+                            GUILayout.Label("UPM", tagStyle, GUILayout.Width(48f));
+                            GUI.backgroundColor = previousBg;
+                        }
+                    }
                     if (!string.IsNullOrEmpty(package.author))
                         EditorGUILayout.LabelField("Author: " + package.author, EditorStyles.miniLabel);
                     EditorGUILayout.LabelField(package.id ?? string.Empty, EditorStyles.miniLabel);
@@ -383,16 +407,26 @@ namespace com.tgs.packagemanager.editor
                     }
 
                     var installedVersion = item.InstalledVersion;
-                    EditorGUILayout.LabelField("Installed", string.IsNullOrEmpty(installedVersion) ? "Not installed" : installedVersion);
+                    var installedLabel = string.IsNullOrEmpty(installedVersion) ? "Not installed" : installedVersion;
+                    if (isUpmInstalled)
+                    {
+                        installedLabel = string.IsNullOrEmpty(upmVersion) ? "UPM" : "UPM " + upmVersion;
+                    }
+                    EditorGUILayout.LabelField("Installed", installedLabel);
                     if (IsGitInitialized(package))
                     {
                         var gitHead = GetGitHeadCommit(package);
                         var gitDetached = IsGitDetached(package);
-                        if (!string.IsNullOrEmpty(gitHead))
+                    if (!string.IsNullOrEmpty(gitHead))
+                    {
+                        var gitMessage = GetGitHeadMessage(package);
+                        var gitLabel = gitDetached ? "Git: " + gitHead + " (Detached HEAD)" : "Git: " + gitHead;
+                        if (!string.IsNullOrEmpty(gitMessage))
                         {
-                            var gitLabel = gitDetached ? "Git: " + gitHead + " (Detached HEAD)" : "Git: " + gitHead;
-                            EditorGUILayout.LabelField(gitLabel, EditorStyles.miniLabel);
+                            gitLabel += " - " + gitMessage;
                         }
+                        EditorGUILayout.LabelField(gitLabel, EditorStyles.miniLabel);
+                    }
                     }
 
                     if (item.IsLocalOnly)
@@ -408,9 +442,16 @@ namespace com.tgs.packagemanager.editor
                     }
                     if (canInstall)
                     {
-                        DrawVersionSelection(package);
+                        DrawVersionSelection(package, installedVersion, canInstall, isUpmInstalled, upmVersion, item.IsLocalOnly, item.IsInstalled);
                     }
-                    DrawAutoUpdateToggle(package, item.IsLocalOnly);
+                    if (!canInstall)
+                    {
+                        DrawAutoUpdateToggle(package, item.IsLocalOnly);
+                    }
+
+                    var buttonDivider = EditorGUILayout.GetControlRect(false, 1f);
+                    EditorGUI.DrawRect(new Rect(buttonDivider.x, buttonDivider.y, buttonDivider.width, 1f),
+                        new Color(0.2f, 0.2f, 0.2f, 1f));
 
                     using (new EditorGUILayout.HorizontalScope())
                     {
@@ -455,37 +496,26 @@ namespace com.tgs.packagemanager.editor
                                 if (GUILayout.Button("Create Version"))
                                 {
                                     CreateVersionWindow.Show(this, package);
-                                }
-                                GUI.backgroundColor = previousBgColor;
+                            }
+                            GUI.backgroundColor = previousBgColor;
                             }
                             
-                            var isLatestInstalled = IsLatestInstalled(package, installedVersion);
-                            EditorGUI.BeginDisabledGroup(_isBusy || isLatestInstalled || !canInstall);
-                            if (GUILayout.Button("Install Latest"))
+                            if (item.IsInstalled || isUpmInstalled)
                             {
-                                var reference = ResolveLatestRef(package);
-                                var operation = string.IsNullOrEmpty(installedVersion) ? "Installation" : "Update";
-                                var targetVersion = GetLatestVersion(package);
-                                StartOperation(InstallPackage(package, reference, operation, targetVersion));
-                            }
-                            EditorGUI.EndDisabledGroup();
-                            EditorGUI.BeginDisabledGroup(_isBusy || !canInstall);
-                            if (GUILayout.Button("Install Selected Version"))
-                            {
-                                var selectedVersion = GetSelectedVersion(package);
-                                if (selectedVersion != null)
+                                EditorGUI.BeginDisabledGroup(package.required);
+                                if (GUILayout.Button("Uninstall"))
                                 {
-                                    var reference = BuildVersionRef(package, selectedVersion.version);
-                                    var operation = string.IsNullOrEmpty(installedVersion) ? "Installation" : "Update";
-                                    StartOperation(InstallPackage(package, reference, operation, selectedVersion.version));
+                                    if (item.IsInstalled)
+                                    {
+                                        UninstallPackageSafe(package);
+                                    }
+                                    else if (isUpmInstalled)
+                                    {
+                                        StartOperation(RemovePackageViaUpm(package));
+                                    }
                                 }
+                                EditorGUI.EndDisabledGroup();
                             }
-                            EditorGUI.BeginDisabledGroup(package.required);
-                            if (GUILayout.Button("Uninstall"))
-                            {
-                                UninstallPackageSafe(package);
-                            }
-                            EditorGUI.EndDisabledGroup();
                             EditorGUI.EndDisabledGroup();
                         }
 
@@ -499,34 +529,49 @@ namespace com.tgs.packagemanager.editor
                             }
                             GUI.backgroundColor = previousBgColor;
                             
-                            EditorGUI.BeginDisabledGroup(package.required);
-                            if (GUILayout.Button("Uninstall"))
+                            if (item.IsInstalled)
                             {
-                                UninstallPackageSafe(package);
-                            }
-                            EditorGUI.EndDisabledGroup();
-                        }
-
-                        EditorGUI.BeginDisabledGroup(string.IsNullOrEmpty(installedVersion));
-                        if (GUILayout.Button("Open Directory"))
-                        {
-                            OpenPackageDirectory(package);
-                        }
-                        EditorGUI.EndDisabledGroup();
-
-                        if (item.IsInstalled && !item.IsLocalOnly && !IsGitInitialized(package))
-                        {
-                            if (GUILayout.Button("Initialize Git"))
-                            {
-                                var reference = string.IsNullOrEmpty(installedVersion)
-                                    ? null
-                                    : BuildVersionRef(package, installedVersion);
-                                SetupGitForInstalledPackage(package, reference);
-                                RefreshLocalCache();
+                                EditorGUI.BeginDisabledGroup(package.required);
+                                if (GUILayout.Button("Uninstall"))
+                                {
+                                    UninstallPackageSafe(package);
+                                }
+                                EditorGUI.EndDisabledGroup();
                             }
                         }
 
-                        if (RemoteExists(package))
+                        if (item.IsInstalled)
+                        {
+                            if (GUILayout.Button("Open Directory"))
+                            {
+                                OpenPackageDirectory(package);
+                            }
+                        }
+
+                        if (item.IsInstalled && !item.IsLocalOnly)
+                        {
+                            if (!IsGitInitialized(package))
+                            {
+                                if (GUILayout.Button("Initialize Git"))
+                                {
+                                    var reference = string.IsNullOrEmpty(installedVersion)
+                                        ? null
+                                        : BuildVersionRef(package, installedVersion);
+                                    SetupGitForInstalledPackage(package, reference);
+                                    RefreshLocalCache();
+                                }
+                            }
+                            else
+                            {
+                                if (GUILayout.Button("Remove Git"))
+                                {
+                                    RemoveGitForInstalledPackage(package);
+                                    RefreshLocalCache();
+                                }
+                            }
+                        }
+
+                        if (!item.IsLocalOnly)
                         {
                             if (GUILayout.Button("Open Remote"))
                             {
@@ -541,35 +586,116 @@ namespace com.tgs.packagemanager.editor
             EditorGUILayout.EndScrollView();
         }
 
-        private void DrawVersionSelection(PackageEntry package)
+        private void DrawVersionSelection(PackageEntry package, string installedVersion, bool canInstall,
+            bool isUpmInstalled, string upmVersion, bool isLocalOnly, bool isInstalled)
         {
             if (package == null || package.loadStatus != PackageLoadStatus.Loaded)
             {
                 return;
             }
 
-            if (package.versions == null || package.versions.Length == 0)
+            using (new EditorGUILayout.HorizontalScope())
             {
-                EditorGUILayout.LabelField("Versions", "None");
-                return;
-            }
+                if (package.versions == null || package.versions.Length == 0)
+                {
+                    EditorGUILayout.LabelField("Version", GUILayout.Width(60f));
+                    EditorGUILayout.LabelField("None", GUILayout.Width(140f));
+                }
+                else
+                {
+                    var labels = new string[package.versions.Length];
+                    for (var i = 0; i < labels.Length; i++)
+                    {
+                        labels[i] = package.versions[i].version;
+                    }
 
-            var installedVersion = GetInstalledVersion(package);
+                    var selectedIndex = GetSelectedIndex(package.id);
+                    if (selectedIndex < 0)
+                    {
+                        selectedIndex = GetDefaultSelectedIndex(package, installedVersion);
+                    }
+                    selectedIndex = Mathf.Clamp(selectedIndex, 0, labels.Length - 1);
+                    EditorGUILayout.LabelField("Version", GUILayout.Width(60f));
+                    selectedIndex = EditorGUILayout.Popup(selectedIndex, labels, GUILayout.Width(140f));
+                    _selectedVersions[package.id] = selectedIndex;
+                }
 
-            var labels = new string[package.versions.Length];
-            for (var i = 0; i < labels.Length; i++)
-            {
-                labels[i] = package.versions[i].version;
-            }
+                if (!isLocalOnly)
+                {
+                    EditorGUI.BeginChangeCheck();
+                    var isEnabled = IsAutoUpdateEnabled(package.id);
+                    var nextValue = EditorGUILayout.ToggleLeft("Auto Update", isEnabled, GUILayout.Width(110f));
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        SetAutoUpdateEnabled(package.id, nextValue);
+                    }
+                }
 
-            var selectedIndex = GetSelectedIndex(package.id);
-            if (selectedIndex < 0)
-            {
-                selectedIndex = GetDefaultSelectedIndex(package, installedVersion);
+                if (isUpmInstalled)
+                {
+                    var selectedVersionLabel = GetSelectedVersionLabel(package);
+                    var isSelectedInstalled = !string.IsNullOrEmpty(selectedVersionLabel)
+                        && !string.IsNullOrEmpty(upmVersion)
+                        && string.Equals(selectedVersionLabel, upmVersion, StringComparison.OrdinalIgnoreCase);
+                    EditorGUI.BeginDisabledGroup(_isBusy || isSelectedInstalled || !canInstall);
+                    if (GUILayout.Button("Update via UPM", GUILayout.Width(120f)))
+                    {
+                        var reference = !string.IsNullOrEmpty(selectedVersionLabel)
+                            ? BuildVersionRef(package, selectedVersionLabel)
+                            : BuildPackageBranchRef(package.id);
+                        StartOperation(UpdatePackageViaUpm(package, reference, selectedVersionLabel));
+                    }
+                    EditorGUI.EndDisabledGroup();
+
+                    if (GUILayout.Button("Open Unity Package Manager", GUILayout.Width(190f)))
+                    {
+                        if (!OpenUpmWindow(package.id))
+                        {
+                            _statusMessage = "ERROR: Unable to open Package Manager.";
+                        }
+                    }
+                }
+
+                if (!isUpmInstalled)
+                {
+                    var isLatestInstalled = IsLatestInstalled(package, installedVersion);
+                    EditorGUI.BeginDisabledGroup(_isBusy || isLatestInstalled || !canInstall);
+                    if (GUILayout.Button("Install Latest", GUILayout.Width(120f)))
+                    {
+                        var reference = ResolveLatestRef(package);
+                        var operation = string.IsNullOrEmpty(installedVersion) ? "Installation" : "Update";
+                        var targetVersion = GetLatestVersion(package);
+                        StartOperation(InstallPackage(package, reference, operation, targetVersion));
+                    }
+                    EditorGUI.EndDisabledGroup();
+
+                    var selectedVersion = GetSelectedVersion(package);
+                    var isSelectedInstalled = selectedVersion != null
+                        && !string.IsNullOrEmpty(installedVersion)
+                        && string.Equals(selectedVersion.version, installedVersion, StringComparison.OrdinalIgnoreCase);
+                    EditorGUI.BeginDisabledGroup(_isBusy || !canInstall || isSelectedInstalled);
+                    if (GUILayout.Button("Install Selected Version", GUILayout.Width(180f)))
+                    {
+                        if (selectedVersion != null)
+                        {
+                            var reference = BuildVersionRef(package, selectedVersion.version);
+                            var operation = string.IsNullOrEmpty(installedVersion) ? "Installation" : "Update";
+                            StartOperation(InstallPackage(package, reference, operation, selectedVersion.version));
+                        }
+                    }
+                    EditorGUI.EndDisabledGroup();
+                }
+
+                if (!isInstalled && !isUpmInstalled)
+                {
+                    EditorGUI.BeginDisabledGroup(isLocalOnly);
+                    if (GUILayout.Button("Install via UPM", GUILayout.Width(130f)))
+                    {
+                        StartOperation(InstallPackageViaUpm(package));
+                    }
+                    EditorGUI.EndDisabledGroup();
+                }
             }
-            selectedIndex = Mathf.Clamp(selectedIndex, 0, labels.Length - 1);
-            selectedIndex = EditorGUILayout.Popup("Version", selectedIndex, labels);
-            _selectedVersions[package.id] = selectedIndex;
         }
 
         private bool DrawPackageStatus(PackageEntry package)
@@ -681,7 +807,10 @@ namespace com.tgs.packagemanager.editor
                     continue;
                 }
 
-                var installedVersion = GetInstalledVersionCached(package);
+                var upmInfo = GetUpmPackageInfo(package);
+                var upmVersion = upmInfo != null ? upmInfo.version : null;
+                var isUpmInstalled = upmInfo != null;
+                var installedVersion = isUpmInstalled ? upmVersion : GetInstalledVersionCached(package);
                 if (!string.IsNullOrEmpty(installedVersion) && IsUpdateAvailable(package, installedVersion))
                 {
                     return true;
@@ -705,20 +834,29 @@ namespace com.tgs.packagemanager.editor
                     continue;
                 }
 
-                var installedVersion = GetInstalledVersionCached(package);
+                var upmInfo = GetUpmPackageInfo(package);
+                var upmVersion = upmInfo != null ? upmInfo.version : null;
+                var isUpmInstalled = upmInfo != null;
+
+                var installedVersion = isUpmInstalled ? upmVersion : GetInstalledVersionCached(package);
                 if (string.IsNullOrEmpty(installedVersion) || !IsUpdateAvailable(package, installedVersion))
                 {
                     continue;
                 }
 
-                var reference = ResolveLatestRef(package);
-                if (string.IsNullOrEmpty(reference))
-                {
-                    continue;
-                }
+                var latestVersion = GetLatestVersion(package);
+                var reference = !string.IsNullOrEmpty(latestVersion)
+                    ? BuildVersionRef(package, latestVersion)
+                    : BuildPackageBranchRef(package.id);
 
-                var targetVersion = GetLatestVersion(package);
-                yield return InstallPackage(package, reference, "Update", targetVersion);
+                if (isUpmInstalled)
+                {
+                    yield return UpdatePackageViaUpm(package, reference, latestVersion);
+                }
+                else
+                {
+                    yield return InstallPackage(package, reference, "Update", latestVersion);
+                }
             }
         }
 
@@ -743,10 +881,14 @@ namespace com.tgs.packagemanager.editor
                     remoteIds.Add(package.id);
                 }
 
+                var upmInfo = GetUpmPackageInfo(package);
+                var upmVersion = upmInfo != null ? upmInfo.version : null;
+                var isUpmInstalled = upmInfo != null;
                 var installedVersion = GetInstalledVersionCached(package);
                 var isInstalled = !string.IsNullOrEmpty(installedVersion);
-                var hasUpdate = isInstalled && IsUpdateAvailable(package, installedVersion);
-                items.Add(new PackageListItem(package, installedVersion, isInstalled, hasUpdate, false));
+                var effectiveVersion = isUpmInstalled ? upmVersion : installedVersion;
+                var hasUpdate = !string.IsNullOrEmpty(effectiveVersion) && IsUpdateAvailable(package, effectiveVersion);
+                items.Add(new PackageListItem(package, installedVersion, isInstalled, hasUpdate, false, isUpmInstalled, upmVersion));
             }
 
             foreach (var localItem in BuildLocalOnlyPackages(remoteIds))
@@ -756,6 +898,13 @@ namespace com.tgs.packagemanager.editor
 
             items.Sort((left, right) =>
             {
+                var leftRequired = left.Package != null && left.Package.required;
+                var rightRequired = right.Package != null && right.Package.required;
+                if (leftRequired != rightRequired)
+                {
+                    return rightRequired.CompareTo(leftRequired);
+                }
+
                 if (left.IsLocalOnly != right.IsLocalOnly)
                 {
                     return right.IsLocalOnly.CompareTo(left.IsLocalOnly);
@@ -768,12 +917,14 @@ namespace com.tgs.packagemanager.editor
                     return string.Compare(leftLocalName, rightLocalName, StringComparison.OrdinalIgnoreCase);
                 }
 
-                if (left.IsInstalled != right.IsInstalled)
+                var leftInstalled = left.IsInstalled || left.IsUpmInstalled;
+                var rightInstalled = right.IsInstalled || right.IsUpmInstalled;
+                if (leftInstalled != rightInstalled)
                 {
-                    return right.IsInstalled.CompareTo(left.IsInstalled);
+                    return rightInstalled.CompareTo(leftInstalled);
                 }
 
-                if (left.IsInstalled && left.HasUpdate != right.HasUpdate)
+                if (leftInstalled && left.HasUpdate != right.HasUpdate)
                 {
                     return right.HasUpdate.CompareTo(left.HasUpdate);
                 }
@@ -803,6 +954,24 @@ namespace com.tgs.packagemanager.editor
             return name + "-v" + version;
         }
 
+        private string GetSelectedVersionLabel(PackageEntry package)
+        {
+            if (package == null || package.versions == null || package.versions.Length == 0)
+            {
+                return null;
+            }
+
+            var selectedIndex = GetSelectedIndex(package.id);
+            if (selectedIndex < 0)
+            {
+                selectedIndex = GetDefaultSelectedIndex(package, GetInstalledVersionCached(package));
+            }
+
+            selectedIndex = Mathf.Clamp(selectedIndex, 0, package.versions.Length - 1);
+            var selectedVersion = package.versions[selectedIndex];
+            return selectedVersion != null ? selectedVersion.version : null;
+        }
+
         private int GetSelectedIndex(string packageId)
         {
             if (string.IsNullOrEmpty(packageId))
@@ -823,6 +992,122 @@ namespace com.tgs.packagemanager.editor
             var index = GetSelectedIndex(package.id);
             index = Mathf.Clamp(index, 0, package.versions.Length - 1);
             return package.versions[index];
+        }
+
+        private string BuildUpmGitUrl(PackageEntry package, string referenceOverride = null)
+        {
+            var repoUrl = string.IsNullOrEmpty(_repoUrl) ? DefaultRepoUrl : _repoUrl;
+            if (string.IsNullOrEmpty(repoUrl))
+            {
+                return null;
+            }
+
+            var normalizedRepoUrl = NormalizeUpmRepoUrl(repoUrl);
+            var reference = string.IsNullOrEmpty(referenceOverride) ? GetUpmTargetRef(package) : referenceOverride;
+            if (string.IsNullOrEmpty(reference))
+            {
+                return null;
+            }
+
+            return normalizedRepoUrl + "#" + reference;
+        }
+
+        private string GetUpmTargetRef(PackageEntry package)
+        {
+            if (package == null)
+            {
+                return string.Empty;
+            }
+
+            var selectedVersion = GetSelectedVersionLabel(package);
+            if (!string.IsNullOrEmpty(selectedVersion))
+            {
+                return BuildVersionRef(package, selectedVersion);
+            }
+
+            return BuildPackageBranchRef(package.id);
+        }
+
+        private static string NormalizeUpmRepoUrl(string repoUrl)
+        {
+            if (string.IsNullOrEmpty(repoUrl))
+            {
+                return string.Empty;
+            }
+
+            var trimmed = repoUrl.Trim();
+            if (trimmed.StartsWith("git@github.com:", StringComparison.OrdinalIgnoreCase))
+            {
+                return trimmed.EndsWith(".git", StringComparison.OrdinalIgnoreCase) ? trimmed : trimmed + ".git";
+            }
+
+            if (trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            {
+                if (trimmed.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+                {
+                    return trimmed;
+                }
+
+                return trimmed.TrimEnd('/') + ".git";
+            }
+
+            return trimmed;
+        }
+
+        private UnityEditor.PackageManager.PackageInfo GetUpmPackageInfo(PackageEntry package)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return null;
+            }
+
+            return UnityEditor.PackageManager.PackageInfo.FindForAssetPath("Packages/" + package.id);
+        }
+
+        private bool OpenUpmWindow(string packageId)
+        {
+            if (TryOpenUpmWindow(packageId))
+            {
+                return true;
+            }
+
+            return EditorApplication.ExecuteMenuItem("Window/Package Manager");
+        }
+
+        private static bool TryOpenUpmWindow(string packageId)
+        {
+            var windowType = Type.GetType("UnityEditor.PackageManager.UI.Window,UnityEditor");
+            if (windowType == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!string.IsNullOrEmpty(packageId))
+                {
+                    var openWithPackage = windowType.GetMethod("Open", new[] { typeof(string) });
+                    if (openWithPackage != null)
+                    {
+                        openWithPackage.Invoke(null, new object[] { packageId });
+                        return true;
+                    }
+                }
+
+                var openDefault = windowType.GetMethod("Open", Type.EmptyTypes);
+                if (openDefault != null)
+                {
+                    openDefault.Invoke(null, null);
+                    return true;
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            return false;
         }
 
         private string GetInstalledVersion(PackageEntry package)
@@ -912,7 +1197,7 @@ namespace com.tgs.packagemanager.editor
                 }
 
                 var installedVersion = info.Version ?? string.Empty;
-                items.Add(new PackageListItem(entry, installedVersion, !string.IsNullOrEmpty(installedVersion), false, true));
+                items.Add(new PackageListItem(entry, installedVersion, !string.IsNullOrEmpty(installedVersion), false, true, false, null));
             }
 
             return items;
@@ -1249,6 +1534,16 @@ namespace com.tgs.packagemanager.editor
             return _gitHeadCache.TryGetValue(package.id, out var commit) ? commit : null;
         }
 
+        private string GetGitHeadMessage(PackageEntry package)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return null;
+            }
+
+            return _gitHeadMessageCache.TryGetValue(package.id, out var message) ? message : null;
+        }
+
         private bool IsGitDetached(PackageEntry package)
         {
             if (package == null || string.IsNullOrEmpty(package.id))
@@ -1288,7 +1583,17 @@ namespace com.tgs.packagemanager.editor
 
         private string GetRemoteUrlForPackage(PackageEntry package)
         {
-            return _remoteUrlCache.TryGetValue(package.id, out var url) ? url : null;
+            if (package != null && _remoteUrlCache.TryGetValue(package.id, out var url) && !string.IsNullOrEmpty(url))
+            {
+                return url;
+            }
+
+            if (!string.IsNullOrEmpty(_repoUrl))
+            {
+                return _repoUrl;
+            }
+
+            return null;
         }
 
         private void RefreshLocalCache()
@@ -1366,6 +1671,12 @@ namespace com.tgs.packagemanager.editor
                         _gitHeadCache[id] = headCommit.Trim();
                     }
 
+                    var headMessage = RunGitGetOutput(directory, "log -1 --pretty=%s", _gitHubToken);
+                    if (!string.IsNullOrEmpty(headMessage))
+                    {
+                        _gitHeadMessageCache[id] = headMessage.Trim();
+                    }
+
                     var branchName = RunGitGetOutput(directory, "rev-parse --abbrev-ref HEAD", _gitHubToken);
                     _gitDetachedCache[id] = string.Equals(branchName?.Trim(), "HEAD", StringComparison.OrdinalIgnoreCase);
                 }
@@ -1379,6 +1690,7 @@ namespace com.tgs.packagemanager.editor
             _pendingCommitCache.Clear();
             _gitInitializedCache.Clear();
             _gitHeadCache.Clear();
+            _gitHeadMessageCache.Clear();
             _gitDetachedCache.Clear();
             _remoteExistsCache.Clear();
             _remoteUrlCache.Clear();
@@ -1392,21 +1704,46 @@ namespace com.tgs.packagemanager.editor
                 return remoteUrl;
             }
 
-            var url = remoteUrl.Trim();
-            if (url.StartsWith("git@github.com:", StringComparison.OrdinalIgnoreCase))
+            var url = NormalizeRemoteRepoUrl(remoteUrl);
+            if (string.IsNullOrEmpty(url))
             {
-                url = "https://github.com/" + url.Substring("git@github.com:".Length);
+                return remoteUrl;
+            }
+
+            return url + "/tree/" + branch;
+        }
+
+        private static string NormalizeRemoteRepoUrl(string remoteUrl)
+        {
+            if (string.IsNullOrEmpty(remoteUrl))
+            {
+                return string.Empty;
+            }
+
+            var url = remoteUrl.Trim();
+            if (url.StartsWith("git@", StringComparison.OrdinalIgnoreCase))
+            {
+                var separatorIndex = url.IndexOf(':');
+                if (separatorIndex > 0)
+                {
+                    var host = url.Substring(4, separatorIndex - 4);
+                    var path = url.Substring(separatorIndex + 1);
+                    url = "https://" + host + "/" + path;
+                }
+            }
+
+            if (url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
+                {
+                    var path = uri.AbsolutePath.TrimStart('/');
+                    url = "https://" + uri.Host + "/" + path;
+                }
             }
 
             if (url.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
             {
                 url = url.Substring(0, url.Length - 4);
-            }
-
-            if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-                url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            {
-                return url + "/tree/" + branch;
             }
 
             return url;
@@ -1516,10 +1853,41 @@ namespace com.tgs.packagemanager.editor
                 return;
             }
 
+            if (!TryDeletePackageMeta(packageRoot))
+            {
+                SetOperationError("Uninstall", package, GetInstalledVersionCached(package), "Failed to delete package meta file.");
+                return;
+            }
+
             AssetDatabase.Refresh();
             _statusMessage = "Uninstalled " + package.id + ".";
             RefreshLocalCache();
             StartOperation(LoadManifest());
+        }
+
+        private bool TryDeletePackageMeta(string packageRoot)
+        {
+            if (string.IsNullOrEmpty(packageRoot))
+            {
+                return true;
+            }
+
+            var metaPath = packageRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + ".meta";
+            if (!File.Exists(metaPath))
+            {
+                return true;
+            }
+
+            try
+            {
+                File.Delete(metaPath);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _statusMessage = "Failed to delete meta for package folder: " + ex.Message;
+                return false;
+            }
         }
 
         private void SetOperationError(string operation, PackageEntry package, string version, string details)
@@ -1568,6 +1936,44 @@ namespace com.tgs.packagemanager.editor
             {
                 RunGit(packageRoot, "checkout -B " + refToUse + " origin/" + refToUse, _gitHubToken);
             }
+        }
+
+        private void RemoveGitForInstalledPackage(PackageEntry package)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return;
+            }
+
+            var packageRoot = Path.Combine(_installRoot, package.id);
+            if (!Directory.Exists(packageRoot))
+            {
+                _statusMessage = "Package directory not found for " + package.id + ".";
+                return;
+            }
+
+            var gitRoot = Path.Combine(packageRoot, ".git");
+            if (!Directory.Exists(gitRoot))
+            {
+                _statusMessage = "No Git metadata found for " + package.id + ".";
+                return;
+            }
+
+            if (!TryDeleteDirectory(gitRoot))
+            {
+                _statusMessage = "Failed to remove Git metadata for " + package.id + ".";
+                return;
+            }
+
+            _gitInitializedCache.Remove(package.id);
+            _gitHeadCache.Remove(package.id);
+            _gitHeadMessageCache.Remove(package.id);
+            _gitDetachedCache.Remove(package.id);
+            _remoteExistsCache.Remove(package.id);
+            _remoteUrlCache.Remove(package.id);
+            _pendingCommitCache.Remove(package.id);
+            _pendingPushCache.Remove(package.id);
+            _statusMessage = "Removed Git metadata for " + package.id + ".";
         }
 
         private void UpdateGitForInstalledPackage(PackageEntry package, string reference)
@@ -1930,22 +2336,34 @@ namespace com.tgs.packagemanager.editor
                     continue;
                 }
 
-                var installedVersion = GetInstalledVersionCached(package);
+                var upmInfo = GetUpmPackageInfo(package);
+                var upmVersion = upmInfo != null ? upmInfo.version : null;
+                var isUpmInstalled = upmInfo != null;
+                var installedVersion = isUpmInstalled ? upmVersion : GetInstalledVersionCached(package);
                 var needsInstall = string.IsNullOrEmpty(installedVersion) || IsUpdateAvailable(package, installedVersion);
                 if (!needsInstall)
                 {
                     continue;
                 }
 
-                var reference = ResolveLatestRef(package);
+                var latestVersion = GetLatestVersion(package);
+                var reference = !string.IsNullOrEmpty(latestVersion)
+                    ? BuildVersionRef(package, latestVersion)
+                    : BuildPackageBranchRef(package.id);
                 if (string.IsNullOrEmpty(reference))
                 {
                     continue;
                 }
 
-                var operation = string.IsNullOrEmpty(installedVersion) ? "Installation" : "Update";
-                var targetVersion = GetLatestVersion(package);
-                yield return InstallPackage(package, reference, operation, targetVersion);
+                if (isUpmInstalled)
+                {
+                    yield return UpdatePackageViaUpm(package, reference, latestVersion);
+                }
+                else
+                {
+                    var operation = string.IsNullOrEmpty(installedVersion) ? "Installation" : "Update";
+                    yield return InstallPackage(package, reference, operation, latestVersion);
+                }
             }
         }
 
@@ -2747,14 +3165,19 @@ namespace com.tgs.packagemanager.editor
             public bool IsInstalled { get; }
             public bool HasUpdate { get; }
             public bool IsLocalOnly { get; }
+            public bool IsUpmInstalled { get; }
+            public string UpmVersion { get; }
 
-            public PackageListItem(PackageEntry package, string installedVersion, bool isInstalled, bool hasUpdate, bool isLocalOnly)
+            public PackageListItem(PackageEntry package, string installedVersion, bool isInstalled, bool hasUpdate,
+                bool isLocalOnly, bool isUpmInstalled, string upmVersion)
             {
                 Package = package;
                 InstalledVersion = installedVersion;
                 IsInstalled = isInstalled;
                 HasUpdate = hasUpdate;
                 IsLocalOnly = isLocalOnly;
+                IsUpmInstalled = isUpmInstalled;
+                UpmVersion = upmVersion;
             }
         }
 
@@ -2824,6 +3247,151 @@ namespace com.tgs.packagemanager.editor
             }
 
             SetOperationError(operation, package, targetVersion, errorMessage);
+        }
+
+        private IEnumerator InstallPackageViaUpm(PackageEntry package)
+        {
+            if (package == null)
+            {
+                _statusMessage = "ERROR: UPM install failed for unknown package.";
+                yield break;
+            }
+
+            var upmUrl = BuildUpmGitUrl(package);
+            if (string.IsNullOrEmpty(upmUrl))
+            {
+                SetOperationError("UPM Install", package, GetUpmTargetRef(package), "Missing repository URL.");
+                yield break;
+            }
+
+            _lastUpmUrl = upmUrl;
+            _statusMessage = "Installing " + package.id + " via UPM...";
+            AddRequest request;
+            try
+            {
+                request = Client.Add(upmUrl);
+            }
+            catch (Exception ex)
+            {
+                SetOperationError("UPM Install", package, GetUpmTargetRef(package), ex.Message);
+                yield break;
+            }
+
+            while (!request.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (request.Status == StatusCode.Success)
+            {
+                _statusMessage = "Installed " + package.id + " via UPM.";
+                RefreshLocalCache();
+                yield break;
+            }
+
+            var errorMessage = request.Error != null ? request.Error.message : "Unknown UPM error.";
+            SetOperationError("UPM Install", package, GetUpmTargetRef(package), errorMessage);
+        }
+
+        private IEnumerator RemovePackageViaUpm(PackageEntry package)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                _statusMessage = "ERROR: UPM uninstall failed for unknown package.";
+                yield break;
+            }
+
+            RemoveRequest request;
+            try
+            {
+                request = Client.Remove(package.id);
+            }
+            catch (Exception ex)
+            {
+                SetOperationError("UPM Uninstall", package, GetUpmTargetRef(package), ex.Message);
+                yield break;
+            }
+
+            while (!request.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (request.Status == StatusCode.Success)
+            {
+                _statusMessage = "Uninstalled " + package.id + " via UPM.";
+                RefreshLocalCache();
+                yield break;
+            }
+
+            var errorMessage = request.Error != null ? request.Error.message : "Unknown UPM error.";
+            SetOperationError("UPM Uninstall", package, GetUpmTargetRef(package), errorMessage);
+        }
+
+        private IEnumerator UpdatePackageViaUpm(PackageEntry package, string reference, string targetVersion)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                _statusMessage = "ERROR: UPM update failed for unknown package.";
+                yield break;
+            }
+
+            var upmUrl = BuildUpmGitUrl(package, reference);
+            if (string.IsNullOrEmpty(upmUrl))
+            {
+                SetOperationError("UPM Update", package, targetVersion, "Missing repository URL.");
+                yield break;
+            }
+
+            _statusMessage = "Updating " + package.id + " via UPM...";
+            RemoveRequest removeRequest;
+            try
+            {
+                removeRequest = Client.Remove(package.id);
+            }
+            catch (Exception ex)
+            {
+                SetOperationError("UPM Update", package, targetVersion, ex.Message);
+                yield break;
+            }
+
+            while (!removeRequest.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (removeRequest.Status != StatusCode.Success)
+            {
+                var removeError = removeRequest.Error != null ? removeRequest.Error.message : "Unknown UPM error.";
+                SetOperationError("UPM Update", package, targetVersion, removeError);
+                yield break;
+            }
+
+            AddRequest addRequest;
+            try
+            {
+                addRequest = Client.Add(upmUrl);
+            }
+            catch (Exception ex)
+            {
+                SetOperationError("UPM Update", package, targetVersion, ex.Message);
+                yield break;
+            }
+
+            while (!addRequest.IsCompleted)
+            {
+                yield return null;
+            }
+
+            if (addRequest.Status == StatusCode.Success)
+            {
+                _statusMessage = "Updated " + package.id + " via UPM.";
+                RefreshLocalCache();
+                yield break;
+            }
+
+            var addError = addRequest.Error != null ? addRequest.Error.message : "Unknown UPM error.";
+            SetOperationError("UPM Update", package, targetVersion, addError);
         }
 
         private static bool IsGitPackAccessDenied(string message)
@@ -2948,6 +3516,8 @@ namespace com.tgs.packagemanager.editor
                     : MessageType.Info;
                 EditorGUILayout.HelpBox(_statusMessage, messageType);
             }
+
+            
         }
 
         private void StartOperation(IEnumerator routine)

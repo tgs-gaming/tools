@@ -1,5 +1,5 @@
 {
-    "name": "com.tgs.spine-handler.editor",
+    "name": "com.tgs.package-manager.editor",
     "rootNamespace": "com.tgs.packagemanager.editor",
     "references": [],
     "includePlatforms": [
