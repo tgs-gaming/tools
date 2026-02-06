@@ -1,0 +1,19 @@
+TGS SOFTWARE LICENSE AGREEMENT
+
+IMPORTANT: PLEASE READ THIS LICENSE AGREEMENT ("AGREEMENT") CAREFULLY BEFORE USING THE UGF UNITY PACKAGE ("SOFTWARE"). BY USING THE SOFTWARE, YOU ARE AGREEING TO BE BOUND BY THE TERMS OF THIS AGREEMENT. IF YOU DO NOT AGREE TO THE TERMS OF THIS AGREEMENT, DO NOT USE THE SOFTWARE.
+
+LICENSOR: This Software is licensed by TGS Gaming ("LICENSOR").
+
+GRANT OF LICENSE:
+
+a. LICENSOR hereby grants to TGS business partners, subject to the terms and conditions of this Agreement, a non-exclusive, non-transferable, royalty-free license to use and modify this specific version of the Software in their products.
+
+OWNERSHIP: The Software is owned by LICENSOR and is protected by international copyright laws and treaties, as well as other intellectual property laws and treaties. The Software is licensed, not sold. All rights, title, and interest in and to the Software, including all copies and portions thereof, remain with LICENSOR.
+
+NO WARRANTIES: LICENSOR expressly disclaims any warranty for the Software. The Software is provided "As Is" without any express or implied warranty of any kind, including but not limited to any warranties of merchantability, non-infringement, or fitness for a particular purpose. LICENSOR does not warrant or assume responsibility for the accuracy or completeness of any information, text, graphics, links or other items contained within the Software.
+
+LIMITATION OF LIABILITY: In no event shall LICENSOR be liable for any damages (including, without limitation, lost profits, business interruption, or lost information) rising out of licensee's use of or inability to use the Software, even if LICENSOR has been advised of the possibility of such damages. In no event will LICENSOR be liable for loss of data or for indirect, special, incidental, consequential (including lost profit), or other damages.
+
+GOVERNING LAW: This Agreement shall be governed by and construed under the laws of the jurisdiction in which LICENSOR has its principal place of business, without regard to its conflicts of law provisions.
+
+TGS Gaming
