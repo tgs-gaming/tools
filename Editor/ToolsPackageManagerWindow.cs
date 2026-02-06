@@ -471,7 +471,7 @@ namespace com.tgs.packagemanager.editor
                             {
                                 var previousBgColor = GUI.backgroundColor;
                                 GUI.backgroundColor = new Color(0.95f, 0.85f, 0.35f);
-                                if (GUILayout.Button("Commit"))
+                                if (GUILayout.Button("Git Commit"))
                                 {
                                     CommitPackageWindow.Show(this, package, GetPendingCommitFiles(package));
                                 }
@@ -482,18 +482,19 @@ namespace com.tgs.packagemanager.editor
                             {
                                 var previousBgColor = GUI.backgroundColor;
                                 GUI.backgroundColor = Color.red;
-                                if (GUILayout.Button("Push Update"))
+                                if (GUILayout.Button("Git Push"))
                                 {
                                     PushUpdate(package);
                                 }
                                 GUI.backgroundColor = previousBgColor;
                             }
 
-                            if (IsGitInitialized(package))
+                            if ((item.IsInstalled || isUpmInstalled) && TryGetPackageRoot(package, isUpmInstalled, out var packageRoot)
+                                && IsGitInitializedAtPath(packageRoot))
                             {
                                 var previousBgColor = GUI.backgroundColor;
                                 GUI.backgroundColor = Color.red;
-                                if (GUILayout.Button("Create Version"))
+                                if (GUILayout.Button("TAG this version"))
                                 {
                                     CreateVersionWindow.Show(this, package);
                             }
@@ -540,24 +541,31 @@ namespace com.tgs.packagemanager.editor
                             }
                         }
 
-                        if (item.IsInstalled)
+                        if (item.IsInstalled || isUpmInstalled)
                         {
                             if (GUILayout.Button("Open Directory"))
                             {
-                                OpenPackageDirectory(package);
+                                OpenPackageDirectory(package, isUpmInstalled);
                             }
                         }
 
-                        if (item.IsInstalled && !item.IsLocalOnly)
+                        if ((item.IsInstalled || isUpmInstalled) && !item.IsLocalOnly)
                         {
-                            if (!IsGitInitialized(package))
+                            var hasPackageRoot = TryGetPackageRoot(package, isUpmInstalled, out var packageRoot)
+                                || TryGetPackageRoot(package, !isUpmInstalled, out packageRoot);
+                            if (!hasPackageRoot)
                             {
                                 if (GUILayout.Button("Initialize Git"))
                                 {
-                                    var reference = string.IsNullOrEmpty(installedVersion)
-                                        ? null
-                                        : BuildVersionRef(package, installedVersion);
-                                    SetupGitForInstalledPackage(package, reference);
+                                    _statusMessage = "Package directory not found for " + package.id + ".";
+                                }
+                            }
+                            else if (!IsGitInitializedAtPath(packageRoot))
+                            {
+                                if (GUILayout.Button("Initialize Git"))
+                                {
+                                    var reference = ResolveGitInitializationRef(package, installedVersion, isUpmInstalled, upmVersion);
+                                    SetupGitForInstalledPackage(package, reference, packageRoot);
                                     RefreshLocalCache();
                                 }
                             }
@@ -565,7 +573,7 @@ namespace com.tgs.packagemanager.editor
                             {
                                 if (GUILayout.Button("Remove Git"))
                                 {
-                                    RemoveGitForInstalledPackage(package);
+                                    RemoveGitForInstalledPackage(package, packageRoot);
                                     RefreshLocalCache();
                                 }
                             }
@@ -954,6 +962,50 @@ namespace com.tgs.packagemanager.editor
             return name + "-v" + version;
         }
 
+        private string ResolveGitInitializationRef(PackageEntry package, string installedVersion, bool isUpmInstalled, string upmVersion)
+        {
+            if (package == null)
+            {
+                return string.Empty;
+            }
+
+            var version = isUpmInstalled ? upmVersion : installedVersion;
+            if (string.IsNullOrEmpty(version))
+            {
+                return BuildPackageBranchRef(package.id);
+            }
+
+            if (IsTagVersion(package, version))
+            {
+                return BuildVersionRef(package, version);
+            }
+
+            return BuildPackageBranchRef(package.id);
+        }
+
+        private static bool IsTagVersion(PackageEntry package, string version)
+        {
+            if (package == null || string.IsNullOrEmpty(version) || package.versions == null)
+            {
+                return false;
+            }
+
+            foreach (var entry in package.versions)
+            {
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                if (string.Equals(entry.version, version, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private string GetSelectedVersionLabel(PackageEntry package)
         {
             if (package == null || package.versions == null || package.versions.Length == 0)
@@ -1135,14 +1187,22 @@ namespace com.tgs.packagemanager.editor
             }
         }
 
-        private void OpenPackageDirectory(PackageEntry package)
+        private void OpenPackageDirectory(PackageEntry package, bool isUpmInstalled)
         {
             if (package == null || string.IsNullOrEmpty(package.id))
             {
                 return;
             }
 
-            var packageRoot = Path.Combine(_installRoot, package.id);
+            if (!TryGetPackageRoot(package, isUpmInstalled, out var packageRoot))
+            {
+                if (!TryGetPackageRoot(package, !isUpmInstalled, out packageRoot))
+                {
+                    _statusMessage = "Package directory not found for " + package.id + ".";
+                    return;
+                }
+            }
+
             if (Directory.Exists(packageRoot))
             {
                 if (Application.platform == RuntimePlatform.WindowsEditor)
@@ -1158,6 +1218,41 @@ namespace com.tgs.packagemanager.editor
             {
                 _statusMessage = "Package directory not found for " + package.id + ".";
             }
+        }
+
+        private bool TryGetPackageRoot(PackageEntry package, bool isUpmInstalled, out string packageRoot)
+        {
+            packageRoot = null;
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return false;
+            }
+
+            if (isUpmInstalled)
+            {
+                var upmInfo = GetUpmPackageInfo(package);
+                var resolved = upmInfo != null ? upmInfo.resolvedPath : null;
+                if (!string.IsNullOrEmpty(resolved) && Directory.Exists(resolved))
+                {
+                    packageRoot = resolved;
+                    return true;
+                }
+
+                return false;
+            }
+
+            packageRoot = Path.Combine(_installRoot, package.id);
+            return Directory.Exists(packageRoot);
+        }
+
+        private static bool IsGitInitializedAtPath(string packageRoot)
+        {
+            if (string.IsNullOrEmpty(packageRoot))
+            {
+                return false;
+            }
+
+            return Directory.Exists(Path.Combine(packageRoot, ".git"));
         }
 
         private List<PackageListItem> BuildLocalOnlyPackages(HashSet<string> remoteIds)
@@ -1903,14 +1998,16 @@ namespace com.tgs.packagemanager.editor
             _statusMessage = message;
         }
 
-        private void SetupGitForInstalledPackage(PackageEntry package, string reference)
+        private void SetupGitForInstalledPackage(PackageEntry package, string reference, string packageRootOverride = null)
         {
             if (package == null || string.IsNullOrEmpty(package.id))
             {
                 return;
             }
 
-            var packageRoot = Path.Combine(_installRoot, package.id);
+            var packageRoot = string.IsNullOrEmpty(packageRootOverride)
+                ? Path.Combine(_installRoot, package.id)
+                : packageRootOverride;
             if (!Directory.Exists(packageRoot))
             {
                 Debug.LogWarning("SetupGitForInstalledPackage: directory not found for " + package.id);
@@ -1938,14 +2035,16 @@ namespace com.tgs.packagemanager.editor
             }
         }
 
-        private void RemoveGitForInstalledPackage(PackageEntry package)
+        private void RemoveGitForInstalledPackage(PackageEntry package, string packageRootOverride = null)
         {
             if (package == null || string.IsNullOrEmpty(package.id))
             {
                 return;
             }
 
-            var packageRoot = Path.Combine(_installRoot, package.id);
+            var packageRoot = string.IsNullOrEmpty(packageRootOverride)
+                ? Path.Combine(_installRoot, package.id)
+                : packageRootOverride;
             if (!Directory.Exists(packageRoot))
             {
                 _statusMessage = "Package directory not found for " + package.id + ".";
