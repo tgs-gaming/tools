@@ -59,6 +59,8 @@ namespace com.tgs.packagemanager.editor
         private readonly Dictionary<string, bool> _pendingPushCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, bool> _pendingCommitCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, bool> _gitInitializedCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _gitHeadCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, bool> _gitDetachedCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, bool> _remoteExistsCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _remoteUrlCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<LocalPackageInfo> _localPackagesCache = new List<LocalPackageInfo>();
@@ -382,6 +384,16 @@ namespace com.tgs.packagemanager.editor
 
                     var installedVersion = item.InstalledVersion;
                     EditorGUILayout.LabelField("Installed", string.IsNullOrEmpty(installedVersion) ? "Not installed" : installedVersion);
+                    if (IsGitInitialized(package))
+                    {
+                        var gitHead = GetGitHeadCommit(package);
+                        var gitDetached = IsGitDetached(package);
+                        if (!string.IsNullOrEmpty(gitHead))
+                        {
+                            var gitLabel = gitDetached ? "Git: " + gitHead + " (Detached HEAD)" : "Git: " + gitHead;
+                            EditorGUILayout.LabelField(gitLabel, EditorStyles.miniLabel);
+                        }
+                    }
 
                     if (item.IsLocalOnly)
                     {
@@ -506,7 +518,10 @@ namespace com.tgs.packagemanager.editor
                         {
                             if (GUILayout.Button("Initialize Git"))
                             {
-                                SetupGitForInstalledPackage(package, null);
+                                var reference = string.IsNullOrEmpty(installedVersion)
+                                    ? null
+                                    : BuildVersionRef(package, installedVersion);
+                                SetupGitForInstalledPackage(package, reference);
                                 RefreshLocalCache();
                             }
                         }
@@ -957,6 +972,7 @@ namespace com.tgs.packagemanager.editor
             RunGit(packageRoot, "push -u origin " + BuildPackageBranchRef(package.id), _gitHubToken, logErrors: true);
             _statusMessage = "Published " + package.id + ".";
             RefreshLocalCache();
+            StartOperation(LoadManifest());
         }
 
         public void CommitPackage(PackageEntry package, string message)
@@ -985,6 +1001,7 @@ namespace com.tgs.packagemanager.editor
             RunGit(packageRoot, "commit -m \"" + EscapeGitMessage(message) + "\"", _gitHubToken, logErrors: true);
             _statusMessage = "Committed " + package.id + ".";
             RefreshLocalCache();
+            StartOperation(LoadManifest());
         }
 
         public void CreateVersionTag(PackageEntry package, string version, string releaseNotes)
@@ -1048,6 +1065,7 @@ namespace com.tgs.packagemanager.editor
             RunGit(packageRoot, "push origin " + tag, _gitHubToken, logErrors: true);
             _statusMessage = "Created tag " + tag + ".";
             RefreshLocalCache();
+            StartOperation(LoadManifest());
         }
 
         private bool TagExists(string packageRoot, string tag)
@@ -1221,6 +1239,26 @@ namespace com.tgs.packagemanager.editor
             return _gitInitializedCache.TryGetValue(package.id, out var initialized) && initialized;
         }
 
+        private string GetGitHeadCommit(PackageEntry package)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return null;
+            }
+
+            return _gitHeadCache.TryGetValue(package.id, out var commit) ? commit : null;
+        }
+
+        private bool IsGitDetached(PackageEntry package)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return false;
+            }
+
+            return _gitDetachedCache.TryGetValue(package.id, out var detached) && detached;
+        }
+
         private bool RemoteExists(PackageEntry package)
         {
             if (package == null || string.IsNullOrEmpty(package.id))
@@ -1321,6 +1359,15 @@ namespace com.tgs.packagemanager.editor
                             _remoteUrlCache[id] = remoteUrl;
                         }
                     }
+
+                    var headCommit = RunGitGetOutput(directory, "rev-parse --short HEAD", _gitHubToken);
+                    if (!string.IsNullOrEmpty(headCommit))
+                    {
+                        _gitHeadCache[id] = headCommit.Trim();
+                    }
+
+                    var branchName = RunGitGetOutput(directory, "rev-parse --abbrev-ref HEAD", _gitHubToken);
+                    _gitDetachedCache[id] = string.Equals(branchName?.Trim(), "HEAD", StringComparison.OrdinalIgnoreCase);
                 }
             }
         }
@@ -1331,6 +1378,8 @@ namespace com.tgs.packagemanager.editor
             _pendingPushCache.Clear();
             _pendingCommitCache.Clear();
             _gitInitializedCache.Clear();
+            _gitHeadCache.Clear();
+            _gitDetachedCache.Clear();
             _remoteExistsCache.Clear();
             _remoteUrlCache.Clear();
             _localPackagesCache.Clear();
@@ -1442,6 +1491,7 @@ namespace com.tgs.packagemanager.editor
             RunGit(packageRoot, "push -u origin " + BuildPackageBranchRef(package.id), _gitHubToken);
             _statusMessage = "Pushed " + package.id + ".";
             RefreshLocalCache();
+            StartOperation(LoadManifest());
         }
 
         private void UninstallPackageSafe(PackageEntry package)
@@ -1469,6 +1519,7 @@ namespace com.tgs.packagemanager.editor
             AssetDatabase.Refresh();
             _statusMessage = "Uninstalled " + package.id + ".";
             RefreshLocalCache();
+            StartOperation(LoadManifest());
         }
 
         private void SetOperationError(string operation, PackageEntry package, string version, string details)
@@ -1511,10 +1562,59 @@ namespace com.tgs.packagemanager.editor
             if (IsTagRef(package.id, refToUse))
             {
                 RunGit(packageRoot, "checkout -f " + refToUse, _gitHubToken);
+                EnsureBranchTipWhenMatching(packageRoot, package.id, refToUse);
             }
             else
             {
                 RunGit(packageRoot, "checkout -B " + refToUse + " origin/" + refToUse, _gitHubToken);
+            }
+        }
+
+        private void UpdateGitForInstalledPackage(PackageEntry package, string reference)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return;
+            }
+
+            var packageRoot = Path.Combine(_installRoot, package.id);
+            if (!Directory.Exists(packageRoot))
+            {
+                return;
+            }
+
+            var refToUse = string.IsNullOrEmpty(reference) ? BuildPackageBranchRef(package.id) : reference;
+            RunGit(packageRoot, "fetch --all --tags", _gitHubToken);
+
+            if (IsTagRef(package.id, refToUse))
+            {
+                RunGit(packageRoot, "checkout -f " + refToUse, _gitHubToken);
+                EnsureBranchTipWhenMatching(packageRoot, package.id, refToUse);
+            }
+            else
+            {
+                RunGit(packageRoot, "checkout -B " + refToUse + " origin/" + refToUse, _gitHubToken);
+            }
+        }
+
+        private void EnsureBranchTipWhenMatching(string packageRoot, string packageId, string tagRef)
+        {
+            if (string.IsNullOrEmpty(packageRoot) || string.IsNullOrEmpty(packageId) || string.IsNullOrEmpty(tagRef))
+            {
+                return;
+            }
+
+            var branchRef = BuildPackageBranchRef(packageId);
+            var tagHash = RunGitGetOutput(packageRoot, "rev-parse " + tagRef, _gitHubToken);
+            var branchHash = RunGitGetOutput(packageRoot, "rev-parse origin/" + branchRef, _gitHubToken);
+            if (string.IsNullOrEmpty(tagHash) || string.IsNullOrEmpty(branchHash))
+            {
+                return;
+            }
+
+            if (string.Equals(tagHash.Trim(), branchHash.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                RunGit(packageRoot, "checkout -B " + branchRef + " origin/" + branchRef, _gitHubToken);
             }
         }
 
@@ -2691,6 +2791,10 @@ namespace com.tgs.packagemanager.editor
             if (!hadError)
             {
                 _statusMessage = "Installed " + package.id + ".";
+                if (IsGitInitialized(package))
+                {
+                    UpdateGitForInstalledPackage(package, reference);
+                }
                 RefreshLocalCache();
                 yield break;
             }
@@ -2710,6 +2814,10 @@ namespace com.tgs.packagemanager.editor
                 if (!hadError)
                 {
                     _statusMessage = "Installed " + package.id + ".";
+                    if (IsGitInitialized(package))
+                    {
+                        UpdateGitForInstalledPackage(package, reference);
+                    }
                     RefreshLocalCache();
                     yield break;
                 }
