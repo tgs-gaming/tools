@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0 - 2026-02-06
+- Added UPM install/update support with version-aware actions and auto-update integration.
+- Improved package list UI (version row buttons, UPM badge, required-first sort, update indicators, git commit message).
+- Enhanced package actions (remove git, uninstall removes meta, open remote from configured repo).
+
+
 ## 1.3.0 - 2026-02-06
 - Support required packages in package.json and UI (no uninstall, auto-update)
 - Add Auto Update toggle per package with persisted interval setting
