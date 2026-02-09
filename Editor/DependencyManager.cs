@@ -84,7 +84,6 @@ namespace com.tgs.assetdependencymanager.editor
 
 	public class DependencyManager : EditorWindow
 	{
-		public const string DUPLICATED_PATH_SUFFIX = "_Duplicated_Assets";
 		public const string EXPORTED_PACKAGE_SUFFIX = "_Exported_Assets";
 		public const string DEPENDENCIES_PATH = "_Dependencies";
 		public const string DEPENDENCIES_BUNDLES_PATH = "Packages/studio.";
@@ -98,8 +97,11 @@ namespace com.tgs.assetdependencymanager.editor
 		private Vector2 _scrollPosition;
 		private int _selectedTab;
 		private bool _previewFoldout = true;
+		private string _duplicateSubFolder = "_Duplicated_Assets";
 		private int _objectPickerId = -1;
 		private int _objectPickerIndex = -1;
+		private string[] _cachedDirectDepsInput;
+		private HashSet<string> _cachedDirectDeps;
 		private static readonly string[] Tabs = { "Copy To", "Replace References", "Export & Import" };
 
 		private static List<Object> _originalAssets;
@@ -132,10 +134,7 @@ namespace com.tgs.assetdependencymanager.editor
 					return new List<string>();
 				if (_assetGameDependencies == null)
 				{
-					var paths = OriginalAssets
-						.Select(a => AssetDatabase.GetAssetPath(a))
-						.Where(p => !string.IsNullOrEmpty(p))
-						.ToArray();
+					var paths = ResolveSelectedAssetPaths(OriginalAssets).ToArray();
 					_assetGameDependencies = GetGameAssetDependencies(paths).Distinct().ToList();   
 					
 					// Remove the asset itself from dependencies
@@ -186,10 +185,7 @@ namespace com.tgs.assetdependencymanager.editor
 					return new List<string>();
 				if (_assetSystemDependencies == null)
 				{
-					var paths = OriginalAssets
-						.Select(a => AssetDatabase.GetAssetPath(a))
-						.Where(p => !string.IsNullOrEmpty(p))
-						.ToArray();
+					var paths = ResolveSelectedAssetPaths(OriginalAssets).ToArray();
 					_assetSystemDependencies = GetSystemAssetDependencies(paths).Distinct().ToList();
 				}
 
@@ -227,6 +223,22 @@ namespace com.tgs.assetdependencymanager.editor
 			};
 		}
 
+		private void OnEnable()
+		{
+			EditorApplication.projectChanged += OnProjectChanged;
+		}
+
+		private void OnDisable()
+		{
+			EditorApplication.projectChanged -= OnProjectChanged;
+		}
+
+		private void OnProjectChanged()
+		{
+			ResetDependencyCaches();
+			ResetDirectDependencyCache();
+		}
+
 		private void OnGUI()
 		{
 			_scrollPosition = EditorGUILayout.BeginScrollView(_scrollPosition);
@@ -256,6 +268,7 @@ namespace com.tgs.assetdependencymanager.editor
 				{
 					OriginalAssets[i] = newAsset;
 					ResetDependencyCaches();
+					ResetDirectDependencyCache();
 				}
 
 				if (GUILayout.Button("Browse", GUILayout.Width(70f)))
@@ -285,6 +298,7 @@ namespace com.tgs.assetdependencymanager.editor
 				{
 					OriginalAssets.RemoveAt(OriginalAssets.Count - 1);
 					ResetDependencyCaches();
+					ResetDirectDependencyCache();
 				}
 				EditorGUI.EndDisabledGroup();
 
@@ -293,6 +307,7 @@ namespace com.tgs.assetdependencymanager.editor
 					EnsureOriginalAssetsList();
 					OriginalAssets.Add(null);
 					ResetDependencyCaches();
+					ResetDirectDependencyCache();
 				}
 
 				GUILayout.FlexibleSpace();
@@ -388,6 +403,8 @@ namespace com.tgs.assetdependencymanager.editor
 				}
 			}
 
+			_duplicateSubFolder = EditorGUILayout.TextField("SubFolder", _duplicateSubFolder);
+
 			var previewItems = BuildDestinationPreview();
 			_previewFoldout = EditorGUILayout.Foldout(_previewFoldout, $"Preview ({previewItems.Count})");
 			if (_previewFoldout)
@@ -410,8 +427,11 @@ namespace com.tgs.assetdependencymanager.editor
 					AssetDatabase.StartAssetEditing();
 					try
 					{
-						DuplicateAsset(OriginalAssets.ToArray(), NewAssetPath);
-						Debug.Log($"DONE! New assets at {AssetDatabase.GetAssetPath(NewAssetPath)}/{DUPLICATED_PATH_SUFFIX}");
+						DuplicateAsset(OriginalAssets.ToArray(), NewAssetPath, GetDuplicateSubFolder());
+						var destinationPath = BuildDestinationBasePath(
+							AssetDatabase.GetAssetPath(NewAssetPath),
+							GetDuplicateSubFolder());
+						Debug.Log($"DONE! New assets at {destinationPath}");
 					}
 					catch (OperationCanceledException)
 					{
@@ -432,6 +452,7 @@ namespace com.tgs.assetdependencymanager.editor
 		private void DrawReplaceReferencesTab()
 		{
 			var originalAssetPaths = GetOriginalAssetPaths();
+			var directDependencyPaths = GetDirectDependencyPathsCached(originalAssetPaths);
 
 			if (AssetGameDependencies != null && AssetGameDependencies.Count > 0)
 			{
@@ -448,17 +469,6 @@ namespace com.tgs.assetdependencymanager.editor
 				EditorGUILayout.EndHorizontal();
 				int startOffset = "Packages/".Length;
 				string packageName = "";
-
-				StringBuilder contentSb = new StringBuilder();
-				foreach (var path in originalAssetPaths)
-				{
-					if (!string.IsNullOrEmpty(path) && File.Exists(path))
-					{
-						contentSb.AppendLine(File.ReadAllText(path));
-					}
-				}
-
-				string originalAssetContent = contentSb.ToString();
 
 				for (int i = 0; i < UniqueAssetGameDependencies.Count; i++)
 				{
@@ -487,8 +497,7 @@ namespace com.tgs.assetdependencymanager.editor
 
 					GUILayout.Label("-->", _itemDescriptionStyle, GUILayout.Width(30));
 
-					bool directDependency =
-						originalAssetContent.Contains(AssetDatabase.GUIDFromAssetPath(dependency).ToString());
+					bool directDependency = directDependencyPaths.Contains(dependency);
 
 					if (directDependency)
 					{
@@ -591,7 +600,7 @@ namespace com.tgs.assetdependencymanager.editor
 
 			if (GUILayout.Button("Export TGS Package", GUILayout.Width(200)))
 			{
-				ExportSelectedPackages(OriginalAssets);
+				ExportSelectedPackages(OriginalAssets, GetDuplicateSubFolder());
 			}
 
 			EditorGUI.EndDisabledGroup();
@@ -610,7 +619,7 @@ namespace com.tgs.assetdependencymanager.editor
 					var folderPath = EditorUtility.OpenFolderPanel("Select Destination Folder", Application.dataPath, string.Empty);
 					if (!string.IsNullOrEmpty(folderPath))
 					{
-						ImportPackage(packagePath, folderPath);
+						ImportPackage(packagePath, folderPath, GetDuplicateSubFolder());
 					}
 				}
 			}
@@ -635,6 +644,7 @@ namespace com.tgs.assetdependencymanager.editor
 					{
 						OriginalAssets[_objectPickerIndex] = picked;
 						ResetDependencyCaches();
+						ResetDirectDependencyCache();
 					}
 				}
 
@@ -656,18 +666,44 @@ namespace com.tgs.assetdependencymanager.editor
 
 		private static string[] GetOriginalAssetPaths()
 		{
-			if (OriginalAssets == null || OriginalAssets.Count == 0)
+			return ResolveSelectedAssetPaths(OriginalAssets).ToArray();
+		}
+
+		private HashSet<string> GetDirectDependencyPathsCached(string[] originalAssetPaths)
+		{
+			if (originalAssetPaths == null || originalAssetPaths.Length == 0)
 			{
-				return Array.Empty<string>();
+				_cachedDirectDepsInput = Array.Empty<string>();
+				_cachedDirectDeps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+				return _cachedDirectDeps;
 			}
 
-			var originalAssetPaths = new string[OriginalAssets.Count];
-			for (int i = 0; i < OriginalAssets.Count; i++)
+			var normalized = originalAssetPaths.Where(path => !string.IsNullOrEmpty(path))
+				.Select(path => path.Replace("\\", "/"))
+				.OrderBy(path => path)
+				.ToArray();
+
+			if (_cachedDirectDepsInput != null &&
+				_cachedDirectDeps != null &&
+				normalized.SequenceEqual(_cachedDirectDepsInput))
 			{
-				originalAssetPaths[i] = AssetDatabase.GetAssetPath(OriginalAssets[i]);
+				return _cachedDirectDeps;
 			}
 
-			return originalAssetPaths;
+			_cachedDirectDepsInput = normalized;
+			_cachedDirectDeps = GetDirectDependencyPaths(normalized);
+			return _cachedDirectDeps;
+		}
+
+		private static HashSet<string> GetDirectDependencyPaths(string[] originalAssetPaths)
+		{
+			if (originalAssetPaths == null || originalAssetPaths.Length == 0)
+			{
+				return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			}
+
+			var deps = AssetDatabase.GetDependencies(originalAssetPaths, false);
+			return new HashSet<string>(deps, StringComparer.OrdinalIgnoreCase);
 		}
 
 		private List<string> BuildDestinationPreview()
@@ -684,29 +720,44 @@ namespace com.tgs.assetdependencymanager.editor
 				return previewItems;
 			}
 
-			var basePath = Path.Combine(destinationPath, DUPLICATED_PATH_SUFFIX).Replace("\\", "/");
-			foreach (var asset in OriginalAssets)
+			var basePath = BuildDestinationBasePath(destinationPath);
+			var selectedFiles = new HashSet<string>(ResolveSelectedAssetPaths(OriginalAssets),
+				StringComparer.OrdinalIgnoreCase);
+			var rootPaths = ResolveSelectedRootPaths(OriginalAssets);
+
+			foreach (var rootPath in rootPaths)
 			{
-				if (asset == null)
+				if (AssetDatabase.IsValidFolder(rootPath))
 				{
-					continue;
-				}
+					var folderName = Path.GetFileName(rootPath);
+					if (!string.IsNullOrEmpty(folderName))
+					{
+						previewItems.Add(Path.Combine(basePath, folderName).Replace("\\", "/"));
+					}
 
-				var sourcePath = AssetDatabase.GetAssetPath(asset);
-				if (string.IsNullOrEmpty(sourcePath))
-				{
-					continue;
+					foreach (var filePath in EnumerateFolderAssets(rootPath))
+					{
+						var relative = filePath.Substring(rootPath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+						previewItems.Add(Path.Combine(basePath, folderName, relative).Replace("\\", "/"));
+					}
 				}
-
-				var fileName = Path.GetFileName(sourcePath);
-				if (!string.IsNullOrEmpty(fileName))
+				else
 				{
-					previewItems.Add(basePath + "/" + fileName);
+					var fileName = Path.GetFileName(rootPath);
+					if (!string.IsNullOrEmpty(fileName))
+					{
+						previewItems.Add(Path.Combine(basePath, fileName).Replace("\\", "/"));
+					}
 				}
 			}
 
 			foreach (var dependency in AssetGameDependencies)
 			{
+				if (selectedFiles.Contains(dependency))
+				{
+					continue;
+				}
+
 				var fileName = Path.GetFileName(dependency);
 				if (!string.IsNullOrEmpty(fileName))
 				{
@@ -715,6 +766,23 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			return previewItems.Distinct().ToList();
+		}
+
+		private string GetDuplicateSubFolder()
+		{
+			return string.IsNullOrWhiteSpace(_duplicateSubFolder) ? string.Empty : _duplicateSubFolder.Trim();
+		}
+
+		private string BuildDestinationBasePath(string destinationPath)
+		{
+			return BuildDestinationBasePath(destinationPath, GetDuplicateSubFolder());
+		}
+
+		private static string BuildDestinationBasePath(string destinationPath, string duplicateSubFolder)
+		{
+			return string.IsNullOrEmpty(duplicateSubFolder)
+				? destinationPath.Replace("\\", "/")
+				: Path.Combine(destinationPath, duplicateSubFolder).Replace("\\", "/");
 		}
 
 		private static string TryGetAssetPathFromFullPath(string fullPath)
@@ -743,23 +811,359 @@ namespace com.tgs.assetdependencymanager.editor
 			_uniqueAssetGameDependenciesReplace = null;
 		}
 
+		private void ResetDirectDependencyCache()
+		{
+			_cachedDirectDepsInput = null;
+			_cachedDirectDeps = null;
+		}
+
+		private static List<string> ResolveSelectedRootPaths(IEnumerable<Object> assets)
+		{
+			var results = new List<string>();
+			if (assets == null)
+			{
+				return results;
+			}
+
+			foreach (var asset in assets)
+			{
+				if (asset == null)
+				{
+					continue;
+				}
+
+				var path = AssetDatabase.GetAssetPath(asset);
+				if (string.IsNullOrEmpty(path))
+				{
+					continue;
+				}
+
+				if (!results.Contains(path))
+				{
+					results.Add(path);
+				}
+			}
+
+			return results;
+		}
+
+		private static List<string> ResolveSelectedAssetPaths(IEnumerable<Object> assets)
+		{
+			var results = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			if (assets == null)
+			{
+				return results.ToList();
+			}
+
+			foreach (var asset in assets)
+			{
+				if (asset == null)
+				{
+					continue;
+				}
+
+				var path = AssetDatabase.GetAssetPath(asset);
+				if (string.IsNullOrEmpty(path))
+				{
+					continue;
+				}
+
+				if (AssetDatabase.IsValidFolder(path))
+				{
+					foreach (var assetPath in EnumerateFolderAssets(path))
+					{
+						results.Add(assetPath);
+					}
+				}
+				else
+				{
+					results.Add(path);
+				}
+			}
+
+			return results.ToList();
+		}
+
+		private static List<string> EnumerateFolderAssets(string folderPath)
+		{
+			var assets = new List<string>();
+			if (string.IsNullOrEmpty(folderPath))
+			{
+				return assets;
+			}
+
+			var guids = AssetDatabase.FindAssets(string.Empty, new[] { folderPath });
+			foreach (var guid in guids)
+			{
+				var assetPath = AssetDatabase.GUIDToAssetPath(guid);
+				if (string.IsNullOrEmpty(assetPath) || AssetDatabase.IsValidFolder(assetPath))
+				{
+					continue;
+				}
+
+				assets.Add(assetPath);
+			}
+
+			return assets;
+		}
+
 		// ========================== DUPLICATE ASSET ============================
 
 
-		private static void DuplicateAsset(Object[] assets, DefaultAsset destination)
+		private static void DuplicateAsset(Object[] assets, DefaultAsset destination, string duplicateSubFolder)
 		{
-			var paths = assets.Select(a => AssetDatabase.GetAssetPath(a)).ToArray();
+			if (assets == null || assets.Length == 0)
+			{
+				return;
+			}
+
 			string destPath = AssetDatabase.GetAssetPath(destination);
-			CopyAssetDeep(paths, destPath);
-			AssetDatabase.ImportAsset(Path.Combine(destPath, DUPLICATED_PATH_SUFFIX), ImportAssetOptions.ImportRecursive);
+			CopySelectionToDestination(assets, destPath, duplicateSubFolder, true);
+			var importPath = BuildDestinationBasePath(destPath, duplicateSubFolder);
+			AssetDatabase.ImportAsset(importPath, ImportAssetOptions.ImportRecursive);
 		}
 
-		private static void CopyAssetDeep(string[] originalAssetsPath, string newAssetPath)
+		private static void CopySelectionToDestination(Object[] assets, string destinationPath, string duplicateSubFolder,
+			bool includeDependencies)
 		{
-			newAssetPath = Path.Combine(newAssetPath, DUPLICATED_PATH_SUFFIX);
-			CopyAssetsAndDependencies(originalAssetsPath, newAssetPath);
-			// .meta handling
-			var metaFiles = GetFilesRecursively(newAssetPath, f => f.EndsWith(".meta"));
+			if (assets == null || assets.Length == 0)
+			{
+				return;
+			}
+
+			BuildSelectionPlan(assets, out var folderRoots, out var fileRoots, out var selectedFiles);
+			var basePath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
+			var copiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+			foreach (var folderRoot in folderRoots)
+			{
+				CopyFolderRoot(folderRoot, basePath, copiedFiles);
+			}
+
+			foreach (var fileRoot in fileRoots)
+			{
+				CopyFileRoot(fileRoot, basePath, copiedFiles);
+			}
+
+			if (includeDependencies && selectedFiles.Count > 0)
+			{
+				var dependencies = GetGameAssetDependencies(selectedFiles.ToArray())
+					.Where(dep => !selectedFiles.Contains(dep))
+					.Where(dep => !AssetDatabase.IsValidFolder(dep))
+					.ToList();
+
+				if (dependencies.Count > 0)
+				{
+					var depsPath = Path.Combine(basePath, DEPENDENCIES_PATH);
+					if (!Directory.Exists(depsPath))
+					{
+						Directory.CreateDirectory(depsPath);
+					}
+
+					foreach (var dep in dependencies)
+					{
+						CopyFileWithMeta(dep, depsPath, copiedFiles);
+					}
+				}
+			}
+
+			RemapGuids(copiedFiles.ToList());
+
+			AssetDatabase.SaveAssets();
+			AssetDatabase.Refresh();
+		}
+
+		private static void CopyFileRoot(string sourcePath, string basePath, HashSet<string> copiedFiles)
+		{
+			if (string.IsNullOrEmpty(sourcePath))
+			{
+				return;
+			}
+
+			var fileName = Path.GetFileName(sourcePath);
+			if (string.IsNullOrEmpty(fileName))
+			{
+				return;
+			}
+
+			if (!Directory.Exists(basePath))
+			{
+				Directory.CreateDirectory(basePath);
+			}
+
+			CopyFileWithMeta(sourcePath, basePath, copiedFiles);
+		}
+
+		private static void CopyFolderRoot(string folderPath, string basePath, HashSet<string> copiedFiles)
+		{
+			if (string.IsNullOrEmpty(folderPath))
+			{
+				return;
+			}
+
+			var folderName = Path.GetFileName(folderPath);
+			if (string.IsNullOrEmpty(folderName))
+			{
+				return;
+			}
+
+			var destRoot = Path.Combine(basePath, folderName);
+			var folderAssets = EnumerateFolderAssets(folderPath);
+			var total = folderAssets.Count;
+
+			for (int i = 0; i < total; i++)
+			{
+				if (EditorUtility.DisplayCancelableProgressBar("Duplicating...", "Copying " + Path.GetFileName(folderAssets[i]),
+						(float)i / total)) throw new OperationCanceledException();
+				var relative = folderAssets[i].Substring(folderPath.Length)
+					.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+				var destPath = Path.Combine(destRoot, relative);
+				CopyFileWithMeta(folderAssets[i], Path.GetDirectoryName(destPath), copiedFiles, destPath);
+			}
+
+			EditorUtility.ClearProgressBar();
+		}
+
+		private static void CopyFileWithMeta(string sourcePath, string destDir, HashSet<string> copiedFiles, string destPathOverride = null)
+		{
+			if (string.IsNullOrEmpty(sourcePath) || string.IsNullOrEmpty(destDir))
+			{
+				return;
+			}
+
+			if (!Directory.Exists(destDir))
+			{
+				Directory.CreateDirectory(destDir);
+			}
+
+			var fileName = Path.GetFileName(sourcePath);
+			if (string.IsNullOrEmpty(fileName))
+			{
+				return;
+			}
+
+			var destPath = destPathOverride ?? Path.Combine(destDir, fileName);
+			if (!File.Exists(destPath))
+			{
+				File.Copy(sourcePath, destPath, false);
+			}
+			copiedFiles.Add(destPath);
+
+			var metaPath = sourcePath + ".meta";
+			if (File.Exists(metaPath))
+			{
+				var destMeta = destPath + ".meta";
+				if (!File.Exists(destMeta))
+				{
+					File.Copy(metaPath, destMeta, false);
+				}
+				copiedFiles.Add(destMeta);
+			}
+		}
+
+		private static void CopyExtractedPackage(string sourceRoot, string destinationPath, string duplicateSubFolder)
+		{
+			if (string.IsNullOrEmpty(sourceRoot) || !Directory.Exists(sourceRoot))
+			{
+				return;
+			}
+
+			var basePath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
+			if (!Directory.Exists(basePath))
+			{
+				Directory.CreateDirectory(basePath);
+			}
+
+			var sourceFiles = Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories);
+			var copiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var total = sourceFiles.Length;
+			try
+			{
+				for (int i = 0; i < total; i++)
+				{
+					if (EditorUtility.DisplayCancelableProgressBar("Importing...", "Copying " + Path.GetFileName(sourceFiles[i]),
+							(float)i / total)) throw new OperationCanceledException();
+					var relative = sourceFiles[i].Substring(sourceRoot.Length)
+						.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+					var destPath = Path.Combine(basePath, relative);
+					var destDir = Path.GetDirectoryName(destPath);
+					if (!string.IsNullOrEmpty(destDir) && !Directory.Exists(destDir))
+					{
+						Directory.CreateDirectory(destDir);
+					}
+
+					if (!File.Exists(destPath))
+					{
+						File.Copy(sourceFiles[i], destPath, false);
+					}
+					copiedFiles.Add(destPath);
+				}
+			}
+			finally
+			{
+				EditorUtility.ClearProgressBar();
+			}
+
+			RemapGuids(copiedFiles.ToList());
+		}
+
+		private static void BuildSelectionPlan(Object[] assets, out List<string> folderRoots, out List<string> fileRoots,
+			out HashSet<string> selectedFiles)
+		{
+			folderRoots = new List<string>();
+			fileRoots = new List<string>();
+			selectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+			if (assets == null)
+			{
+				return;
+			}
+
+			foreach (var asset in assets)
+			{
+				if (asset == null)
+				{
+					continue;
+				}
+
+				var path = AssetDatabase.GetAssetPath(asset);
+				if (string.IsNullOrEmpty(path))
+				{
+					continue;
+				}
+
+				if (AssetDatabase.IsValidFolder(path))
+				{
+					if (!folderRoots.Contains(path))
+					{
+						folderRoots.Add(path);
+					}
+
+					foreach (var assetPath in EnumerateFolderAssets(path))
+					{
+						selectedFiles.Add(assetPath);
+					}
+				}
+				else
+				{
+					if (!fileRoots.Contains(path))
+					{
+						fileRoots.Add(path);
+					}
+
+					selectedFiles.Add(path);
+				}
+			}
+		}
+
+		private static void RemapGuids(List<string> copiedFiles)
+		{
+			if (copiedFiles == null || copiedFiles.Count == 0)
+			{
+				return;
+			}
+
+			var metaFiles = copiedFiles.Where(f => f.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)).ToList();
 			var guidTable = new List<(string originalGuid, string newGuid)>();
 			try
 			{
@@ -767,12 +1171,11 @@ namespace com.tgs.assetdependencymanager.editor
 				{
 					if (EditorUtility.DisplayCancelableProgressBar("Duplicating...", "Processing .meta files",
 							(float)i / metaFiles.Count)) throw new OperationCanceledException();
-					var lines = File.ReadAllLines(metaFiles[i]);
-					if (lines.Length > 1)
+
+					if (TryGetGuidFromMeta(metaFiles[i], out var originalGuid))
 					{
-						var orig = lines[1].Substring(6);
 						string newGuid = GUID.Generate().ToString().Replace("-", "");
-						guidTable.Add((orig, newGuid));
+						guidTable.Add((originalGuid, newGuid));
 					}
 				}
 			}
@@ -781,12 +1184,18 @@ namespace com.tgs.assetdependencymanager.editor
 				EditorUtility.ClearProgressBar();
 			}
 
-			var allFiles = GetFilesRecursively(newAssetPath);
+			if (guidTable.Count == 0)
+			{
+				return;
+			}
+
+			var allFiles = copiedFiles.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 			try
 			{
 				for (int i = 0; i < allFiles.Count; i++)
 				{
-					if (IgnoreFileFormat(allFiles[i])) continue;
+					if (!allFiles[i].EndsWith(".meta", StringComparison.OrdinalIgnoreCase) &&
+						IgnoreFileFormat(allFiles[i])) continue;
 					if (EditorUtility.DisplayCancelableProgressBar("Duplicating...",
 							$"Replacing GUID in {Path.GetFileName(allFiles[i])}", (float)i / allFiles.Count))
 						throw new OperationCanceledException();
@@ -799,48 +1208,26 @@ namespace com.tgs.assetdependencymanager.editor
 			{
 				EditorUtility.ClearProgressBar();
 			}
-
-			AssetDatabase.SaveAssets();
-			AssetDatabase.Refresh();
 		}
 
-		private static void CopyAssetsAndDependencies(string[] sourceAssetPaths, string destAssetPath)
+		private static bool TryGetGuidFromMeta(string metaPath, out string guid)
 		{
-			if (!Directory.Exists(destAssetPath)) Directory.CreateDirectory(destAssetPath);
-			try
+			guid = null;
+			if (string.IsNullOrEmpty(metaPath) || !File.Exists(metaPath))
 			{
-				for (int i = 0; i < sourceAssetPaths.Length; i++)
-				{
-					var file = new FileInfo(sourceAssetPaths[i]);
-					if (EditorUtility.DisplayCancelableProgressBar("Duplicating...", "Copying " + file.Name,
-							(float)i / sourceAssetPaths.Length)) throw new OperationCanceledException();
-					var dst = Path.Combine(destAssetPath, file.Name);
-					if (!File.Exists(dst)) file.CopyTo(dst, false);
-					var meta = new FileInfo(sourceAssetPaths[i] + ".meta");
-					if (meta.Exists && !File.Exists(dst + ".meta")) meta.CopyTo(dst + ".meta", false);
-				}
+				return false;
+			}
 
-				var deps = GetGameAssetDependencies(sourceAssetPaths);
-				if (deps.Length > 0)
+			foreach (var line in File.ReadAllLines(metaPath))
+			{
+				if (line.StartsWith("guid:", StringComparison.OrdinalIgnoreCase))
 				{
-					var dp = Path.Combine(destAssetPath, DEPENDENCIES_PATH);
-					if (!Directory.Exists(dp)) Directory.CreateDirectory(dp);
-					for (int i = 0; i < deps.Length; i++)
-					{
-						var file = new FileInfo(deps[i]);
-						if (EditorUtility.DisplayCancelableProgressBar("Duplicating...", "Copying " + file.Name,
-								(float)i / deps.Length)) throw new OperationCanceledException();
-						var dst = Path.Combine(dp, file.Name);
-						if (!File.Exists(dst)) file.CopyTo(dst, false);
-						var meta = new FileInfo(deps[i] + ".meta");
-						if (meta.Exists && !File.Exists(dst + ".meta")) meta.CopyTo(dst + ".meta", false);
-					}
+					guid = line.Substring("guid:".Length).Trim();
+					return !string.IsNullOrEmpty(guid);
 				}
 			}
-			finally
-			{
-				EditorUtility.ClearProgressBar();
-			}
+
+			return false;
 		}
 
 		// ========================== REPLACE REFERENCES ============================
@@ -926,8 +1313,13 @@ namespace com.tgs.assetdependencymanager.editor
 
 		// ========================== EXPORTER ============================
 
-		public static void ExportSelectedPackages(List<Object> assets)
+		public static void ExportSelectedPackages(List<Object> assets, string duplicateSubFolder = "_Duplicated_Assets")
 		{
+			if (assets == null || assets.Count == 0)
+			{
+				return;
+			}
+
 			string selectedFilePath = EditorUtility.SaveFilePanel("Select Exported UnityPackage Location", "Assets",
 				"ExportedPackage", ASSET_PACKAGE_EXTENSION);
 			string selectedPath = Path.GetDirectoryName(selectedFilePath);
@@ -946,12 +1338,12 @@ namespace com.tgs.assetdependencymanager.editor
 				if (!Directory.Exists(selectedPathInner))
 					Directory.CreateDirectory(selectedPathInner);
 
-				CopyAssetDeep(paths, selectedPathInner);
+				CopySelectionToDestination(assets.ToArray(), selectedPathInner, duplicateSubFolder, true);
 				using (var zipToOpen = new FileStream(selectedFilePath, FileMode.Create))
 				using (var archive =
 					   new System.IO.Compression.ZipArchive(zipToOpen, System.IO.Compression.ZipArchiveMode.Create))
 				{
-					var zipRootPath = Path.Combine(selectedPathInner, DUPLICATED_PATH_SUFFIX);
+					var zipRootPath = Path.Combine(selectedPathInner, duplicateSubFolder);
 					foreach (var filePath in Directory.GetFiles(zipRootPath, "*", SearchOption.AllDirectories))
 					{
 						var entryName = filePath.Substring(zipRootPath.Length)
@@ -987,7 +1379,7 @@ namespace com.tgs.assetdependencymanager.editor
 
 		// ========================== IMPORTER ============================
 
-		public static void ImportPackage(string packagePath, string destinationPath)
+		public static void ImportPackage(string packagePath, string destinationPath, string duplicateSubFolder = "_Duplicated_Assets")
 		{
 			Debug.Log($"Selected destination folder: {destinationPath}");
 			
@@ -999,10 +1391,6 @@ namespace com.tgs.assetdependencymanager.editor
 				AssetDatabase.StartAssetEditing();
 				
 				ExtractZip(packagePath, tempExtractPath);
-				var packageFiles = Directory
-					.GetFiles(tempExtractPath, "*", SearchOption.TopDirectoryOnly)
-					.Where(f => !f.EndsWith(".meta"))
-					.ToArray();
 				
 				AssetDatabase.SaveAssets();
 				AssetDatabase.Refresh();
@@ -1010,8 +1398,9 @@ namespace com.tgs.assetdependencymanager.editor
 				
 				AssetDatabase.StartAssetEditing();
 				
-				CopyAssetDeep(packageFiles, destinationPath);
-				AssetDatabase.ImportAsset(Path.Combine(destinationPath, DUPLICATED_PATH_SUFFIX), ImportAssetOptions.ImportRecursive);
+				CopyExtractedPackage(tempExtractPath, destinationPath, duplicateSubFolder);
+				var importPath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
+				AssetDatabase.ImportAsset(importPath, ImportAssetOptions.ImportRecursive);
 			}   
 			finally
 			{
