@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.1 - 2026-02-09
+- Updated author
+
+
 ## 1.6.0 - 2026-02-09
 - Added dependencies support
 - Added Initialize Git alert
