@@ -960,11 +960,18 @@ namespace com.tgs.assetdependencymanager.editor
 
 		private CodeReferencesInfo GetCodeReferencesCached()
 		{
-			var selectedPaths = ResolveSelectedAssetPaths(OriginalAssets)
+			var selectedAssetPaths = ResolveSelectedAssetPaths(OriginalAssets)
 				.Where(path => !string.IsNullOrEmpty(path))
+				.ToArray();
+			var dependencyPaths = GetGameAssetDependencies(selectedAssetPaths)
+				.Where(path => !string.IsNullOrEmpty(path))
+				.ToArray();
+			var selectedPaths = selectedAssetPaths
+				.Concat(dependencyPaths)
 				.Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
 							   path.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase))
 				.Select(path => path.Replace("\\", "/"))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
 				.OrderBy(path => path)
 				.ToArray();
 
