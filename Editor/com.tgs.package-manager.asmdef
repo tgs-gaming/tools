@@ -1,7 +1,9 @@
 {
     "name": "com.tgs.package-manager.editor",
     "rootNamespace": "com.tgs.packagemanager.editor",
-    "references": [],
+    "references": [
+        "GUID:81ec636f1994da543a55e5a8164de6ec"
+    ],
     "includePlatforms": [
         "Editor"
     ],
