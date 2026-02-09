@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1 - 2026-02-09
+- Removed required field
+
+
 ## 1.1.0 - 2026-02-09
 - Reworked Asset Dependency Manager UI with tabs, dockable window, selection controls, preview, and menu items
 - Added folder support for selection and duplication, preserving structure and internal references
