@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.0 - 2026-02-09
+- Added dependencies support
+- Added Initialize Git alert
+
+
 ## 1.5.0 - 2026-02-06
 - Added UPM install/update flow with version-aware actions, auto-update support, and Update All integration.
 - Improved package list UI (version-row actions, UPM badge, required-first sorting, update indicators, git commit message display).
