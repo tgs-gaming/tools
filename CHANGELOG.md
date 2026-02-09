@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.0 - 2026-02-09
+- Added 'Import to Game'
+
+
 ## 1.6.1 - 2026-02-09
 - Updated author
 
