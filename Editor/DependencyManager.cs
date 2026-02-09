@@ -102,6 +102,13 @@ namespace com.tgs.assetdependencymanager.editor
 		private int _objectPickerIndex = -1;
 		private string[] _cachedDirectDepsInput;
 		private HashSet<string> _cachedDirectDeps;
+		private string[] _cachedCodeRefsInput;
+		private CodeReferencesInfo _cachedCodeRefs;
+		private bool _codeReferencesFoldout = true;
+		private readonly Dictionary<string, string> _namespaceRenames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		private readonly Dictionary<string, string> _asmdefFileRenames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		private readonly Dictionary<string, string> _rootNamespaceRenames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		private readonly Dictionary<string, string> _asmdefNameRenames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		private static readonly string[] Tabs = { "Copy To", "Replace References", "Export & Import" };
 
 		private static List<Object> _originalAssets;
@@ -237,6 +244,7 @@ namespace com.tgs.assetdependencymanager.editor
 		{
 			ResetDependencyCaches();
 			ResetDirectDependencyCache();
+			ResetCodeReferencesCache();
 		}
 
 		private void OnGUI()
@@ -269,6 +277,7 @@ namespace com.tgs.assetdependencymanager.editor
 					OriginalAssets[i] = newAsset;
 					ResetDependencyCaches();
 					ResetDirectDependencyCache();
+					ResetCodeReferencesCache();
 				}
 
 				if (GUILayout.Button("Browse", GUILayout.Width(70f)))
@@ -297,8 +306,10 @@ namespace com.tgs.assetdependencymanager.editor
 				if (GUILayout.Button("-", GUILayout.Width(24f)))
 				{
 					OriginalAssets.RemoveAt(OriginalAssets.Count - 1);
+					EnsureOriginalAssetsList();
 					ResetDependencyCaches();
 					ResetDirectDependencyCache();
+					ResetCodeReferencesCache();
 				}
 				EditorGUI.EndDisabledGroup();
 
@@ -308,6 +319,7 @@ namespace com.tgs.assetdependencymanager.editor
 					OriginalAssets.Add(null);
 					ResetDependencyCaches();
 					ResetDirectDependencyCache();
+					ResetCodeReferencesCache();
 				}
 
 				GUILayout.FlexibleSpace();
@@ -405,6 +417,8 @@ namespace com.tgs.assetdependencymanager.editor
 
 			_duplicateSubFolder = EditorGUILayout.TextField("SubFolder", _duplicateSubFolder);
 
+			var codeReferencesComplete = DrawCodeReferencesSection();
+
 			var previewItems = BuildDestinationPreview();
 			_previewFoldout = EditorGUILayout.Foldout(_previewFoldout, $"Preview ({previewItems.Count})");
 			if (_previewFoldout)
@@ -420,7 +434,7 @@ namespace com.tgs.assetdependencymanager.editor
 			{
 				GUILayout.FlexibleSpace();
 				EditorGUI.BeginDisabledGroup(
-					OriginalAssets == null || OriginalAssets.Count == 0 || NewAssetPath == null);
+					OriginalAssets == null || OriginalAssets.Count == 0 || NewAssetPath == null || !codeReferencesComplete);
 
 				if (GUILayout.Button("Duplicate Asset & Dependencies", GUILayout.Width(220)))
 				{
@@ -588,15 +602,65 @@ namespace com.tgs.assetdependencymanager.editor
 			GUILayout.EndHorizontal();
 		}
 
+		private bool DrawCodeReferencesSection()
+		{
+			var codeRefs = GetCodeReferencesCached();
+			if (codeRefs == null || !codeRefs.HasAny)
+			{
+				return true;
+			}
+
+			GUILayout.Space(8);
+			using (new EditorGUILayout.VerticalScope("box"))
+			{
+				_codeReferencesFoldout = EditorGUILayout.Foldout(_codeReferencesFoldout, "Code References", true);
+				if (_codeReferencesFoldout)
+				{
+					DrawPatternRenameSection("Namespaces", codeRefs.NamespacePatterns, _namespaceRenames);
+					DrawPatternRenameSection("Assembly Definition filenames", codeRefs.AsmdefFilePatterns, _asmdefFileRenames);
+					DrawPatternRenameSection("Root Namespaces", codeRefs.RootNamespacePatterns, _rootNamespaceRenames);
+					DrawPatternRenameSection("Asmdef Names", codeRefs.AsmdefNamePatterns, _asmdefNameRenames);
+				}
+			}
+
+			return AreCodeReferenceRenamesComplete(codeRefs);
+		}
+
+		private void DrawPatternRenameSection(string title, List<string> patterns, Dictionary<string, string> renames)
+		{
+			if (patterns == null || patterns.Count == 0)
+			{
+				return;
+			}
+
+			GUILayout.Space(4);
+			EditorGUILayout.LabelField(title, _itemSubtitleStyle);
+			foreach (var pattern in patterns)
+			{
+				EditorGUILayout.BeginHorizontal();
+				GUILayout.Label(pattern, GUILayout.MinWidth(200f));
+				if (!renames.TryGetValue(pattern, out var newValue) || string.IsNullOrEmpty(newValue))
+				{
+					newValue = pattern;
+					renames[pattern] = newValue;
+				}
+
+				newValue = EditorGUILayout.TextField(newValue ?? string.Empty);
+				renames[pattern] = newValue;
+				EditorGUILayout.EndHorizontal();
+			}
+		}
+
 		private void DrawExportImportTab()
 		{
 			EditorGUILayout.LabelField("Export & Import", _itemTitleStyle);
+			var codeReferencesComplete = DrawCodeReferencesSection();
 			GUILayout.Space(6);
 			GUILayout.BeginHorizontal();
 			GUILayout.FlexibleSpace();
 
 			EditorGUI.BeginDisabledGroup(
-				OriginalAssets == null || OriginalAssets.Count == 0);
+				OriginalAssets == null || OriginalAssets.Count == 0 || !codeReferencesComplete);
 
 			if (GUILayout.Button("Export TGS Package", GUILayout.Width(200)))
 			{
@@ -610,6 +674,7 @@ namespace com.tgs.assetdependencymanager.editor
 			GUILayout.Space(10);
 			GUILayout.BeginHorizontal();
 			GUILayout.FlexibleSpace();
+			EditorGUI.BeginDisabledGroup(!codeReferencesComplete);
 			if (GUILayout.Button("Import TGS Package", GUILayout.Width(200)))
 			{
 				var packagePath = EditorUtility.OpenFilePanel(
@@ -623,6 +688,7 @@ namespace com.tgs.assetdependencymanager.editor
 					}
 				}
 			}
+			EditorGUI.EndDisabledGroup();
 			GUILayout.FlexibleSpace();
 			GUILayout.EndHorizontal();
 		}
@@ -645,6 +711,7 @@ namespace com.tgs.assetdependencymanager.editor
 						OriginalAssets[_objectPickerIndex] = picked;
 						ResetDependencyCaches();
 						ResetDirectDependencyCache();
+						ResetCodeReferencesCache();
 					}
 				}
 
@@ -661,6 +728,11 @@ namespace com.tgs.assetdependencymanager.editor
 			if (OriginalAssets == null)
 			{
 				OriginalAssets = new List<Object>();
+			}
+
+			if (OriginalAssets.Count == 0)
+			{
+				OriginalAssets.Add(null);
 			}
 		}
 
@@ -738,7 +810,8 @@ namespace com.tgs.assetdependencymanager.editor
 					foreach (var filePath in EnumerateFolderAssets(rootPath))
 					{
 						var relative = filePath.Substring(rootPath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-						previewItems.Add(Path.Combine(basePath, folderName, relative).Replace("\\", "/"));
+						var renamedRelative = RenameAsmdefFilenameInPath(relative);
+						previewItems.Add(Path.Combine(basePath, folderName, renamedRelative).Replace("\\", "/"));
 					}
 				}
 				else
@@ -746,7 +819,8 @@ namespace com.tgs.assetdependencymanager.editor
 					var fileName = Path.GetFileName(rootPath);
 					if (!string.IsNullOrEmpty(fileName))
 					{
-						previewItems.Add(Path.Combine(basePath, fileName).Replace("\\", "/"));
+						var renamedFileName = RenameAsmdefFilenameInPath(fileName);
+						previewItems.Add(Path.Combine(basePath, renamedFileName).Replace("\\", "/"));
 					}
 				}
 			}
@@ -761,7 +835,8 @@ namespace com.tgs.assetdependencymanager.editor
 				var fileName = Path.GetFileName(dependency);
 				if (!string.IsNullOrEmpty(fileName))
 				{
-					previewItems.Add(Path.Combine(basePath, DEPENDENCIES_PATH, fileName).Replace("\\", "/"));
+					var renamedFileName = RenameAsmdefFilenameInPath(fileName);
+					previewItems.Add(Path.Combine(basePath, DEPENDENCIES_PATH, renamedFileName).Replace("\\", "/"));
 				}
 			}
 
@@ -771,6 +846,36 @@ namespace com.tgs.assetdependencymanager.editor
 		private string GetDuplicateSubFolder()
 		{
 			return string.IsNullOrWhiteSpace(_duplicateSubFolder) ? string.Empty : _duplicateSubFolder.Trim();
+		}
+
+		private string RenameAsmdefFilenameInPath(string path)
+		{
+			if (string.IsNullOrEmpty(path))
+			{
+				return path;
+			}
+
+			var directory = Path.GetDirectoryName(path);
+			var fileName = Path.GetFileNameWithoutExtension(path);
+			var extension = Path.GetExtension(path);
+			if (!string.Equals(extension, ".asmdef", StringComparison.OrdinalIgnoreCase))
+			{
+				return path;
+			}
+
+			var renamed = ApplyPatternRename(fileName, _asmdefFileRenames);
+			if (string.IsNullOrEmpty(renamed))
+			{
+				renamed = fileName;
+			}
+
+			var newFileName = renamed + extension;
+			if (string.IsNullOrEmpty(directory))
+			{
+				return newFileName;
+			}
+
+			return Path.Combine(directory, newFileName);
 		}
 
 		private string BuildDestinationBasePath(string destinationPath)
@@ -817,6 +922,12 @@ namespace com.tgs.assetdependencymanager.editor
 			_cachedDirectDeps = null;
 		}
 
+		private void ResetCodeReferencesCache()
+		{
+			_cachedCodeRefsInput = null;
+			_cachedCodeRefs = null;
+		}
+
 		private static List<string> ResolveSelectedRootPaths(IEnumerable<Object> assets)
 		{
 			var results = new List<string>();
@@ -845,6 +956,77 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			return results;
+		}
+
+		private CodeReferencesInfo GetCodeReferencesCached()
+		{
+			var selectedPaths = ResolveSelectedAssetPaths(OriginalAssets)
+				.Where(path => !string.IsNullOrEmpty(path))
+				.Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
+							   path.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase))
+				.Select(path => path.Replace("\\", "/"))
+				.OrderBy(path => path)
+				.ToArray();
+
+			if (selectedPaths.Length == 0)
+			{
+				_cachedCodeRefsInput = Array.Empty<string>();
+				_cachedCodeRefs = new CodeReferencesInfo();
+				return _cachedCodeRefs;
+			}
+
+			if (_cachedCodeRefsInput != null &&
+				_cachedCodeRefs != null &&
+				selectedPaths.SequenceEqual(_cachedCodeRefsInput))
+			{
+				return _cachedCodeRefs;
+			}
+
+			var namespaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var asmdefFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var rootNamespaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var asmdefNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+			foreach (var path in selectedPaths)
+			{
+				if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+				{
+					foreach (var ns in ParseNamespaces(path))
+					{
+						namespaces.Add(ns);
+					}
+				}
+				else if (path.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase))
+				{
+					var fileName = Path.GetFileNameWithoutExtension(path);
+					if (!string.IsNullOrEmpty(fileName))
+					{
+						asmdefFiles.Add(fileName);
+					}
+
+					if (TryReadAsmdefStringValue(path, "rootNamespace", out var rootNamespace) &&
+						!string.IsNullOrEmpty(rootNamespace))
+					{
+						rootNamespaces.Add(rootNamespace);
+					}
+
+					if (TryReadAsmdefStringValue(path, "name", out var asmdefName) &&
+						!string.IsNullOrEmpty(asmdefName))
+					{
+						asmdefNames.Add(asmdefName);
+					}
+				}
+			}
+
+			_cachedCodeRefsInput = selectedPaths;
+			_cachedCodeRefs = new CodeReferencesInfo
+			{
+				NamespacePatterns = BuildPatternList(namespaces),
+				AsmdefFilePatterns = BuildPatternList(asmdefFiles),
+				RootNamespacePatterns = BuildPatternList(rootNamespaces),
+				AsmdefNamePatterns = BuildPatternList(asmdefNames)
+			};
+			return _cachedCodeRefs;
 		}
 
 		private static List<string> ResolveSelectedAssetPaths(IEnumerable<Object> assets)
@@ -907,10 +1089,287 @@ namespace com.tgs.assetdependencymanager.editor
 			return assets;
 		}
 
+		private static DependencyManager GetOpenWindow()
+		{
+			return Resources.FindObjectsOfTypeAll<DependencyManager>().FirstOrDefault();
+		}
+
+		private static List<string> ParseNamespaces(string assetPath)
+		{
+			var results = new List<string>();
+			if (string.IsNullOrEmpty(assetPath) || !File.Exists(assetPath))
+			{
+				return results;
+			}
+
+			var content = File.ReadAllText(assetPath);
+			var matches = Regex.Matches(content, @"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_.]*)", RegexOptions.Multiline);
+			foreach (Match match in matches)
+			{
+				if (match.Success && match.Groups.Count > 1)
+				{
+					var value = match.Groups[1].Value.Trim();
+					if (!string.IsNullOrEmpty(value))
+					{
+						results.Add(value);
+					}
+				}
+			}
+
+			return results;
+		}
+
+		private static bool TryReadAsmdefStringValue(string assetPath, string key, out string value)
+		{
+			value = null;
+			if (string.IsNullOrEmpty(assetPath) || !File.Exists(assetPath))
+			{
+				return false;
+			}
+
+			var content = File.ReadAllText(assetPath);
+			var match = Regex.Match(content, $"\"{Regex.Escape(key)}\"\\s*:\\s*\"([^\"]+)\"");
+			if (!match.Success || match.Groups.Count < 2)
+			{
+				return false;
+			}
+
+			value = match.Groups[1].Value.Trim();
+			return !string.IsNullOrEmpty(value);
+		}
+
+		private static List<string> BuildPatternList(IEnumerable<string> values)
+		{
+			var items = values
+				.Where(value => !string.IsNullOrEmpty(value))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+				.ToList();
+
+			if (items.Count <= 1)
+			{
+				return items;
+			}
+
+			var commonPrefix = GetCommonPrefix(items);
+			if (!string.IsNullOrEmpty(commonPrefix))
+			{
+				return new List<string> { commonPrefix };
+			}
+
+			var grouped = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+			foreach (var item in items)
+			{
+				var parent = GetParentPrefix(item);
+				if (string.IsNullOrEmpty(parent))
+				{
+					parent = item;
+				}
+
+				if (!grouped.TryGetValue(parent, out var list))
+				{
+					list = new List<string>();
+					grouped[parent] = list;
+				}
+
+				list.Add(item);
+			}
+
+			var results = new List<string>();
+			foreach (var entry in grouped.OrderBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase))
+			{
+				if (entry.Value.Count > 1)
+				{
+					results.Add(entry.Key);
+				}
+				else
+				{
+					results.Add(entry.Value[0]);
+				}
+			}
+
+			return results;
+		}
+
+		private static string GetCommonPrefix(List<string> items)
+		{
+			if (items == null || items.Count == 0)
+			{
+				return string.Empty;
+			}
+
+			var split = items.Select(item => item.Split('.')).ToList();
+			var minSegments = split.Any(parts => parts.Length > 1) ? 2 : 1;
+			var prefix = new List<string>(split[0]);
+			for (int i = prefix.Count - 1; i >= 0; i--)
+			{
+				if (split.All(parts => parts.Length > i && parts[i] == prefix[i]))
+				{
+					continue;
+				}
+
+				prefix.RemoveAt(i);
+			}
+
+			if (prefix.Count < minSegments)
+			{
+				return string.Empty;
+			}
+
+			return string.Join(".", prefix);
+		}
+
+		private static string GetParentPrefix(string value)
+		{
+			var lastDot = value.LastIndexOf('.');
+			return lastDot > 0 ? value.Substring(0, lastDot) : string.Empty;
+		}
+
+		private static string ReplaceAsmdefStringValue(string content, string key, Dictionary<string, string> renames)
+		{
+			if (string.IsNullOrEmpty(content) || renames == null || renames.Count == 0)
+			{
+				return content;
+			}
+
+			var pattern = $"\"{Regex.Escape(key)}\"\\s*:\\s*\"([^\"]+)\"";
+			return Regex.Replace(content, pattern, match =>
+			{
+				var value = match.Groups[1].Value;
+				var renamed = ApplyPatternRename(value, renames);
+				return match.Value.Replace(value, renamed);
+			});
+		}
+
+		private static string ReplaceAsmdefReferences(string content, Dictionary<string, string> renames)
+		{
+			if (string.IsNullOrEmpty(content) || renames == null || renames.Count == 0)
+			{
+				return content;
+			}
+
+			var pattern = "\"references\"\\s*:\\s*\\[(?<body>[^\\]]*)\\]";
+			return Regex.Replace(content, pattern, match =>
+			{
+				var body = match.Groups["body"].Value;
+				var replacedBody = Regex.Replace(body, "\"([^\"]+)\"", innerMatch =>
+				{
+					var value = innerMatch.Groups[1].Value;
+					var renamed = ApplyPatternRename(value, renames);
+					return innerMatch.Value.Replace(value, renamed);
+				});
+				return match.Value.Replace(body, replacedBody);
+			}, RegexOptions.Singleline);
+		}
+
+		private string ReplaceNamespacePatterns(string content)
+		{
+			if (string.IsNullOrEmpty(content) || _namespaceRenames == null || _namespaceRenames.Count == 0)
+			{
+				return content;
+			}
+
+			var updated = content;
+			foreach (var entry in _namespaceRenames)
+			{
+				if (string.IsNullOrEmpty(entry.Key) || string.IsNullOrEmpty(entry.Value))
+				{
+					continue;
+				}
+
+				var pattern = $"(?<![A-Za-z0-9_]){Regex.Escape(entry.Key)}(?=\\b|\\.)";
+				updated = Regex.Replace(updated, pattern, entry.Value);
+			}
+
+			return updated;
+		}
+
+		private static bool AreRenamesComplete(List<string> patterns, Dictionary<string, string> renames)
+		{
+			if (patterns == null || patterns.Count == 0)
+			{
+				return true;
+			}
+
+			foreach (var pattern in patterns)
+			{
+				if (!renames.TryGetValue(pattern, out var value) || string.IsNullOrWhiteSpace(value))
+				{
+					return false;
+				}
+			}
+
+			return true;
+		}
+
+		private bool AreCodeReferenceRenamesComplete(CodeReferencesInfo codeRefs)
+		{
+			if (codeRefs == null || !codeRefs.HasAny)
+			{
+				return true;
+			}
+
+			return AreRenamesComplete(codeRefs.NamespacePatterns, _namespaceRenames) &&
+				   AreRenamesComplete(codeRefs.AsmdefFilePatterns, _asmdefFileRenames) &&
+				   AreRenamesComplete(codeRefs.RootNamespacePatterns, _rootNamespaceRenames) &&
+				   AreRenamesComplete(codeRefs.AsmdefNamePatterns, _asmdefNameRenames);
+		}
+
+		private static string ApplyPatternRename(string value, Dictionary<string, string> renames)
+		{
+			if (string.IsNullOrEmpty(value) || renames == null || renames.Count == 0)
+			{
+				return value;
+			}
+
+			string bestMatch = null;
+			foreach (var key in renames.Keys)
+			{
+				if (string.IsNullOrEmpty(key))
+				{
+					continue;
+				}
+
+				if (value.StartsWith(key, StringComparison.OrdinalIgnoreCase))
+				{
+					if (bestMatch == null || key.Length > bestMatch.Length)
+					{
+						bestMatch = key;
+					}
+				}
+			}
+
+			if (bestMatch == null)
+			{
+				return value;
+			}
+
+			if (!renames.TryGetValue(bestMatch, out var newValue) || string.IsNullOrEmpty(newValue))
+			{
+				return value;
+			}
+
+			return newValue + value.Substring(bestMatch.Length);
+		}
+
+		private class CodeReferencesInfo
+		{
+			public List<string> NamespacePatterns = new List<string>();
+			public List<string> AsmdefFilePatterns = new List<string>();
+			public List<string> RootNamespacePatterns = new List<string>();
+			public List<string> AsmdefNamePatterns = new List<string>();
+
+			public bool HasAny =>
+				NamespacePatterns.Count > 0 ||
+				AsmdefFilePatterns.Count > 0 ||
+				RootNamespacePatterns.Count > 0 ||
+				AsmdefNamePatterns.Count > 0;
+		}
+
 		// ========================== DUPLICATE ASSET ============================
 
 
-		private static void DuplicateAsset(Object[] assets, DefaultAsset destination, string duplicateSubFolder)
+		private void DuplicateAsset(Object[] assets, DefaultAsset destination, string duplicateSubFolder)
 		{
 			if (assets == null || assets.Length == 0)
 			{
@@ -918,22 +1377,26 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			string destPath = AssetDatabase.GetAssetPath(destination);
-			CopySelectionToDestination(assets, destPath, duplicateSubFolder, true);
+			var copiedFiles = CopySelectionToDestination(assets, destPath, duplicateSubFolder, true);
+			ApplyCodeReferenceRenames(copiedFiles);
+			RemapGuids(copiedFiles.ToList());
+			AssetDatabase.SaveAssets();
+			AssetDatabase.Refresh();
 			var importPath = BuildDestinationBasePath(destPath, duplicateSubFolder);
 			AssetDatabase.ImportAsset(importPath, ImportAssetOptions.ImportRecursive);
 		}
 
-		private static void CopySelectionToDestination(Object[] assets, string destinationPath, string duplicateSubFolder,
+		private static HashSet<string> CopySelectionToDestination(Object[] assets, string destinationPath, string duplicateSubFolder,
 			bool includeDependencies)
 		{
+			var copiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			if (assets == null || assets.Length == 0)
 			{
-				return;
+				return copiedFiles;
 			}
 
 			BuildSelectionPlan(assets, out var folderRoots, out var fileRoots, out var selectedFiles);
 			var basePath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
-			var copiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
 			foreach (var folderRoot in folderRoots)
 			{
@@ -967,10 +1430,7 @@ namespace com.tgs.assetdependencymanager.editor
 				}
 			}
 
-			RemapGuids(copiedFiles.ToList());
-
-			AssetDatabase.SaveAssets();
-			AssetDatabase.Refresh();
+			return copiedFiles;
 		}
 
 		private static void CopyFileRoot(string sourcePath, string basePath, HashSet<string> copiedFiles)
@@ -1061,11 +1521,108 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 		}
 
-		private static void CopyExtractedPackage(string sourceRoot, string destinationPath, string duplicateSubFolder)
+		private void ApplyCodeReferenceRenames(HashSet<string> copiedFiles)
 		{
-			if (string.IsNullOrEmpty(sourceRoot) || !Directory.Exists(sourceRoot))
+			if (copiedFiles == null || copiedFiles.Count == 0)
 			{
 				return;
+			}
+
+			RenameAsmdefFiles(copiedFiles);
+			UpdateAsmdefContents(copiedFiles);
+			UpdateCodeNamespaces(copiedFiles);
+		}
+
+		private void RenameAsmdefFiles(HashSet<string> copiedFiles)
+		{
+			var asmdefFiles = copiedFiles
+				.Where(path => path.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase))
+				.ToList();
+
+			foreach (var asmdefPath in asmdefFiles)
+			{
+				var directory = Path.GetDirectoryName(asmdefPath);
+				var fileName = Path.GetFileNameWithoutExtension(asmdefPath);
+				if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName))
+				{
+					continue;
+				}
+
+				var renamed = ApplyPatternRename(fileName, _asmdefFileRenames);
+				if (string.IsNullOrEmpty(renamed) || string.Equals(renamed, fileName, StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				var newPath = Path.Combine(directory, renamed + ".asmdef");
+				if (File.Exists(newPath))
+				{
+					continue;
+				}
+
+				File.Move(asmdefPath, newPath);
+				copiedFiles.Remove(asmdefPath);
+				copiedFiles.Add(newPath);
+
+				var metaPath = asmdefPath + ".meta";
+				if (File.Exists(metaPath))
+				{
+					var newMetaPath = newPath + ".meta";
+					if (!File.Exists(newMetaPath))
+					{
+						File.Move(metaPath, newMetaPath);
+					}
+					copiedFiles.Remove(metaPath);
+					copiedFiles.Add(newMetaPath);
+				}
+			}
+		}
+
+		private void UpdateAsmdefContents(HashSet<string> copiedFiles)
+		{
+			foreach (var asmdefPath in copiedFiles.Where(path => path.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase)))
+			{
+				if (!File.Exists(asmdefPath))
+				{
+					continue;
+				}
+
+				var content = File.ReadAllText(asmdefPath);
+				var updated = ReplaceAsmdefStringValue(content, "name", _asmdefNameRenames);
+				updated = ReplaceAsmdefStringValue(updated, "rootNamespace", _rootNamespaceRenames);
+				updated = ReplaceAsmdefReferences(updated, _asmdefNameRenames);
+
+				if (!string.Equals(content, updated, StringComparison.Ordinal))
+				{
+					File.WriteAllText(asmdefPath, updated);
+				}
+			}
+		}
+
+		private void UpdateCodeNamespaces(HashSet<string> copiedFiles)
+		{
+			foreach (var codePath in copiedFiles.Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)))
+			{
+				if (!File.Exists(codePath))
+				{
+					continue;
+				}
+
+				var content = File.ReadAllText(codePath);
+				var updated = ReplaceNamespacePatterns(content);
+				if (!string.Equals(content, updated, StringComparison.Ordinal))
+				{
+					File.WriteAllText(codePath, updated);
+				}
+			}
+		}
+
+		private static HashSet<string> CopyExtractedPackage(string sourceRoot, string destinationPath, string duplicateSubFolder)
+		{
+			var copiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			if (string.IsNullOrEmpty(sourceRoot) || !Directory.Exists(sourceRoot))
+			{
+				return copiedFiles;
 			}
 
 			var basePath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
@@ -1075,7 +1632,6 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			var sourceFiles = Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories);
-			var copiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			var total = sourceFiles.Length;
 			try
 			{
@@ -1104,7 +1660,7 @@ namespace com.tgs.assetdependencymanager.editor
 				EditorUtility.ClearProgressBar();
 			}
 
-			RemapGuids(copiedFiles.ToList());
+			return copiedFiles;
 		}
 
 		private static void BuildSelectionPlan(Object[] assets, out List<string> folderRoots, out List<string> fileRoots,
@@ -1338,7 +1894,15 @@ namespace com.tgs.assetdependencymanager.editor
 				if (!Directory.Exists(selectedPathInner))
 					Directory.CreateDirectory(selectedPathInner);
 
-				CopySelectionToDestination(assets.ToArray(), selectedPathInner, duplicateSubFolder, true);
+				var copiedFiles = CopySelectionToDestination(assets.ToArray(), selectedPathInner, duplicateSubFolder, true);
+				var window = GetOpenWindow();
+				if (window != null)
+				{
+					window.ApplyCodeReferenceRenames(copiedFiles);
+				}
+				RemapGuids(copiedFiles.ToList());
+				AssetDatabase.SaveAssets();
+				AssetDatabase.Refresh();
 				using (var zipToOpen = new FileStream(selectedFilePath, FileMode.Create))
 				using (var archive =
 					   new System.IO.Compression.ZipArchive(zipToOpen, System.IO.Compression.ZipArchiveMode.Create))
@@ -1398,7 +1962,15 @@ namespace com.tgs.assetdependencymanager.editor
 				
 				AssetDatabase.StartAssetEditing();
 				
-				CopyExtractedPackage(tempExtractPath, destinationPath, duplicateSubFolder);
+				var copiedFiles = CopyExtractedPackage(tempExtractPath, destinationPath, duplicateSubFolder);
+				var window = GetOpenWindow();
+				if (window != null)
+				{
+					window.ApplyCodeReferenceRenames(copiedFiles);
+				}
+				RemapGuids(copiedFiles.ToList());
+				AssetDatabase.SaveAssets();
+				AssetDatabase.Refresh();
 				var importPath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
 				AssetDatabase.ImportAsset(importPath, ImportAssetOptions.ImportRecursive);
 			}   
