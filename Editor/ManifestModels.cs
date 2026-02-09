@@ -52,6 +52,7 @@ namespace com.tgs.packagemanager.editor
         public string id;
         public string displayName;
         public string description;
+        public string[] dependencies;
         public string pathInRepo;
         public string defaultRef;
         public string refLatest;

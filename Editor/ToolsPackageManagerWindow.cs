@@ -5,6 +5,7 @@ using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using UnityEditor;
+using UnityEditor.Callbacks;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
 using UnityEngine;
@@ -30,6 +31,7 @@ namespace com.tgs.packagemanager.editor
         private const string UserAgent = "CompanyToolsPackageManager/1.0";
         private const string PackageBranchPrefix = "tool/";
         private const double DefaultAutoUpdateIntervalSeconds = 60.0;
+        private static ToolsPackageManagerWindow _backgroundInstance;
 
         private enum ManifestSource
         {
@@ -68,6 +70,7 @@ namespace com.tgs.packagemanager.editor
         private readonly Dictionary<string, bool> _remoteExistsCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _remoteUrlCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<LocalPackageInfo> _localPackagesCache = new List<LocalPackageInfo>();
+        private readonly Dictionary<string, bool> _dependencyFoldouts = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private List<string> _repoTags = new List<string>();
         private static readonly string[] Tabs = { "Packages", "Settings" };
         private static readonly Color InstalledPackageColor = new Color(0.77f, 0.90f, 0.77f);
@@ -118,6 +121,64 @@ namespace com.tgs.packagemanager.editor
             }
 
             _nextAutoUpdateTime = now + _autoUpdateIntervalSeconds;
+            StartOperation(LoadManifest());
+        }
+
+        [InitializeOnLoadMethod]
+        private static void OnEditorLaunched()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return;
+            }
+
+            EditorApplication.delayCall += RequestBackgroundSynchronize;
+        }
+
+        [DidReloadScripts]
+        private static void OnScriptsReloaded()
+        {
+            RequestBackgroundSynchronize();
+        }
+
+        private static void RequestBackgroundSynchronize()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return;
+            }
+
+            var window = GetOrCreateSyncWindow();
+            window?.SynchronizeAfterCompile();
+        }
+
+        private static ToolsPackageManagerWindow GetOrCreateSyncWindow()
+        {
+            var windows = Resources.FindObjectsOfTypeAll<ToolsPackageManagerWindow>();
+            foreach (var window in windows)
+            {
+                if (window != null)
+                {
+                    return window;
+                }
+            }
+
+            if (_backgroundInstance == null)
+            {
+                _backgroundInstance = CreateInstance<ToolsPackageManagerWindow>();
+                _backgroundInstance.hideFlags = HideFlags.HideAndDontSave;
+            }
+
+            return _backgroundInstance;
+        }
+
+        private void SynchronizeAfterCompile()
+        {
+            if (_isBusy || EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return;
+            }
+
             StartOperation(LoadManifest());
         }
 
@@ -413,6 +474,7 @@ namespace com.tgs.packagemanager.editor
                         installedLabel = string.IsNullOrEmpty(upmVersion) ? "UPM" : "UPM " + upmVersion;
                     }
                     EditorGUILayout.LabelField("Installed", installedLabel);
+                    DrawDependenciesFoldout(package, isUpmInstalled, item.IsInstalled || isUpmInstalled);
                     if (IsGitInitialized(package))
                     {
                         var gitHead = GetGitHeadCommit(package);
@@ -564,6 +626,13 @@ namespace com.tgs.packagemanager.editor
                             {
                                 if (GUILayout.Button("Initialize Git"))
                                 {
+                                    var ok = EditorUtility.DisplayDialog("Initialize Git",
+                                        "This will initialize Git for this package. Any local changes may be lost. Continue?",
+                                        "CONTINUE", "CANCEL");
+                                    if (!ok)
+                                    {
+                                        return;
+                                    }
                                     var reference = ResolveGitInitializationRef(package, installedVersion, isUpmInstalled, upmVersion);
                                     SetupGitForInstalledPackage(package, reference, packageRoot);
                                     RefreshLocalCache();
@@ -592,6 +661,303 @@ namespace com.tgs.packagemanager.editor
                 GUI.backgroundColor = previousColor;
             }
             EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawDependenciesFoldout(PackageEntry package, bool isUpmInstalled, bool isInstalled)
+        {
+            if (package == null)
+            {
+                return;
+            }
+
+            var dependencies = package.dependencies ?? Array.Empty<string>();
+            var packageKey = package.id ?? package.displayName;
+            if (string.IsNullOrEmpty(packageKey))
+            {
+                return;
+            }
+
+            var hasDependencies = dependencies.Length > 0;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var isExpanded = GetDependencyFoldoutState(packageKey);
+                var label = "Dependencies (" + dependencies.Length + ")";
+                var labelContent = new GUIContent(label);
+                var labelWidth = EditorStyles.foldout.CalcSize(labelContent).x + 8f;
+                var foldoutRect = EditorGUILayout.GetControlRect(false, EditorGUIUtility.singleLineHeight,
+                    GUILayout.Width(labelWidth));
+                isExpanded = EditorGUI.Foldout(foldoutRect, isExpanded, labelContent, true);
+                _dependencyFoldouts[packageKey] = isExpanded;
+                if (isInstalled)
+                {
+                    GUILayout.Space(4f);
+                    if (GUILayout.Button("Edit", GUILayout.Width(48f)))
+                    {
+                        OpenEditDependenciesWindow(package, isUpmInstalled);
+                    }
+                }
+                if (!isExpanded)
+                {
+                    return;
+                }
+            }
+
+            if (!hasDependencies)
+            {
+                return;
+            }
+
+            foreach (var dependency in dependencies)
+            {
+                if (string.IsNullOrEmpty(dependency))
+                {
+                    continue;
+                }
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Space(16f);
+                    EditorGUILayout.LabelField(FormatDependencyLabel(dependency), EditorStyles.miniLabel);
+                }
+            }
+        }
+
+        private bool GetDependencyFoldoutState(string packageId)
+        {
+            if (string.IsNullOrEmpty(packageId))
+            {
+                return true;
+            }
+
+            return _dependencyFoldouts.TryGetValue(packageId, out var value) ? value : true;
+        }
+
+        private static string FormatDependencyLabel(string dependency)
+        {
+            if (!TryParseDependency(dependency, out var packageId, out var version))
+            {
+                return dependency;
+            }
+
+            if (string.IsNullOrEmpty(version))
+            {
+                return packageId + " (latest)";
+            }
+
+            return packageId + " (v" + version + ")";
+        }
+
+        internal static bool TryParseDependency(string dependency, out string packageId, out string version)
+        {
+            packageId = null;
+            version = null;
+
+            if (string.IsNullOrWhiteSpace(dependency))
+            {
+                return false;
+            }
+
+            var trimmed = dependency.Trim();
+            var match = Regex.Match(trimmed, @"^(?<id>.+)-v(?<version>\d[\w\.-]*)$", RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                packageId = match.Groups["id"].Value;
+                version = match.Groups["version"].Value;
+                return !string.IsNullOrEmpty(packageId);
+            }
+
+            packageId = trimmed;
+            return true;
+        }
+
+        private static string[] ParseDependenciesFromJson(string json)
+        {
+            if (string.IsNullOrEmpty(json))
+            {
+                return null;
+            }
+
+            var arrayMatch = Regex.Match(json, "\"dependencies\"\\s*:\\s*\\[(?<body>[\\s\\S]*?)\\]",
+                RegexOptions.IgnoreCase);
+            if (arrayMatch.Success)
+            {
+                return ParseDependencyArray(arrayMatch.Groups["body"].Value);
+            }
+
+            var objectMatch = Regex.Match(json, "\"dependencies\"\\s*:\\s*\\{(?<body>[\\s\\S]*?)\\}",
+                RegexOptions.IgnoreCase);
+            if (objectMatch.Success)
+            {
+                return ParseDependencyObject(objectMatch.Groups["body"].Value);
+            }
+
+            return null;
+        }
+
+        private static string[] ParseDependencyArray(string body)
+        {
+            if (string.IsNullOrEmpty(body))
+            {
+                return Array.Empty<string>();
+            }
+
+            var matches = Regex.Matches(body, "\"(?<value>(?:\\\\.|[^\"\\\\])*)\"");
+            if (matches.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var list = new List<string>();
+            foreach (Match match in matches)
+            {
+                var value = UnescapeJsonValue(match.Groups["value"].Value);
+                if (!string.IsNullOrEmpty(value))
+                {
+                    list.Add(value);
+                }
+            }
+
+            return list.Count > 0 ? list.ToArray() : Array.Empty<string>();
+        }
+
+        private static string[] ParseDependencyObject(string body)
+        {
+            if (string.IsNullOrEmpty(body))
+            {
+                return Array.Empty<string>();
+            }
+
+            var matches = Regex.Matches(body, "\"(?<key>(?:\\\\.|[^\"\\\\])*)\"\\s*:\\s*\"(?<value>(?:\\\\.|[^\"\\\\])*)\"");
+            if (matches.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var list = new List<string>();
+            foreach (Match match in matches)
+            {
+                var key = UnescapeJsonValue(match.Groups["key"].Value);
+                if (string.IsNullOrEmpty(key))
+                {
+                    continue;
+                }
+
+                var value = UnescapeJsonValue(match.Groups["value"].Value);
+                list.Add(string.IsNullOrEmpty(value) ? key : key + "-v" + value);
+            }
+
+            return list.Count > 0 ? list.ToArray() : Array.Empty<string>();
+        }
+
+        private static string UnescapeJsonValue(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            return value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+
+        private void OpenEditDependenciesWindow(PackageEntry package, bool isUpmInstalled)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return;
+            }
+
+            if (isUpmInstalled)
+            {
+                _statusMessage = "Dependencies can only be edited for locally installed packages.";
+                return;
+            }
+
+            if (!TryGetPackageRoot(package, false, out var packageRoot))
+            {
+                _statusMessage = "Package directory not found for " + package.id + ".";
+                return;
+            }
+
+            EditDependenciesWindow.Show(this, package, packageRoot);
+        }
+
+        internal void UpdatePackageDependencies(PackageEntry package, string packageRoot, string[] dependencies)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return;
+            }
+
+            var packageJsonPath = Path.Combine(packageRoot, "package.json");
+            if (!TryUpdatePackageJsonDependencies(packageJsonPath, dependencies, out var error))
+            {
+                _statusMessage = error;
+                return;
+            }
+
+            package.dependencies = dependencies ?? Array.Empty<string>();
+            RefreshLocalCache();
+            _statusMessage = "Dependencies updated for " + package.id + ".";
+        }
+
+        private static bool TryUpdatePackageJsonDependencies(string packageJsonPath, string[] dependencies, out string error)
+        {
+            error = null;
+            if (string.IsNullOrEmpty(packageJsonPath) || !File.Exists(packageJsonPath))
+            {
+                error = "package.json not found.";
+                return false;
+            }
+
+            string json;
+            try
+            {
+                json = File.ReadAllText(packageJsonPath);
+            }
+            catch (Exception ex)
+            {
+                error = "Failed to read package.json: " + ex.Message;
+                return false;
+            }
+
+            var dependenciesJson = "  \"dependencies\": " + BuildDependenciesJson(dependencies, "  ");
+            var regex = new Regex("\"dependencies\"\\s*:\\s*\\[[\\s\\S]*?\\]", RegexOptions.IgnoreCase);
+            string updated;
+            if (regex.IsMatch(json))
+            {
+                updated = regex.Replace(json, dependenciesJson, 1);
+            }
+            else
+            {
+                var authorRegex = new Regex("\"author\"\\s*:", RegexOptions.IgnoreCase);
+                if (authorRegex.IsMatch(json))
+                {
+                    updated = authorRegex.Replace(json, dependenciesJson + ",\n  \"author\":", 1);
+                }
+                else
+                {
+                    var insertIndex = json.LastIndexOf('}');
+                    if (insertIndex < 0)
+                    {
+                        error = "package.json missing closing brace.";
+                        return false;
+                    }
+
+                    updated = json.Insert(insertIndex, ",\n" + dependenciesJson + "\n");
+                }
+            }
+
+            try
+            {
+                File.WriteAllText(packageJsonPath, updated);
+            }
+            catch (Exception ex)
+            {
+                error = "Failed to update package.json: " + ex.Message;
+                return false;
+            }
+
+            return true;
         }
 
         private void DrawVersionSelection(PackageEntry package, string installedVersion, bool canInstall,
@@ -876,6 +1242,17 @@ namespace com.tgs.packagemanager.editor
                 packages = new List<PackageEntry>();
             }
 
+            var localInfoById = new Dictionary<string, LocalPackageInfo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var info in _localPackagesCache)
+            {
+                if (info == null || string.IsNullOrEmpty(info.Id))
+                {
+                    continue;
+                }
+
+                localInfoById[info.Id] = info;
+            }
+
             var remoteIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var package in packages)
             {
@@ -894,6 +1271,10 @@ namespace com.tgs.packagemanager.editor
                 var isUpmInstalled = upmInfo != null;
                 var installedVersion = GetInstalledVersionCached(package);
                 var isInstalled = !string.IsNullOrEmpty(installedVersion);
+                if (isInstalled && localInfoById.TryGetValue(package.id, out var localInfo))
+                {
+                    package.dependencies = localInfo.Dependencies ?? Array.Empty<string>();
+                }
                 var effectiveVersion = isUpmInstalled ? upmVersion : installedVersion;
                 var hasUpdate = !string.IsNullOrEmpty(effectiveVersion) && IsUpdateAvailable(package, effectiveVersion);
                 items.Add(new PackageListItem(package, installedVersion, isInstalled, hasUpdate, false, isUpmInstalled, upmVersion));
@@ -943,6 +1324,29 @@ namespace com.tgs.packagemanager.editor
             });
 
             return items;
+        }
+
+        internal List<PackageEntry> GetAvailablePackagesSnapshot()
+        {
+            var list = new List<PackageEntry>();
+            if (_packages == null)
+            {
+                return list;
+            }
+
+            foreach (var package in _packages)
+            {
+                if (package == null || package.loadStatus != PackageLoadStatus.Loaded || string.IsNullOrEmpty(package.id))
+                {
+                    continue;
+                }
+
+                list.Add(package);
+            }
+
+            list.Sort((left, right) =>
+                string.Compare(left.displayName ?? left.id, right.displayName ?? right.id, StringComparison.OrdinalIgnoreCase));
+            return list;
         }
 
 
@@ -1281,6 +1685,7 @@ namespace com.tgs.packagemanager.editor
                     displayName = string.IsNullOrEmpty(info.DisplayName) ? info.Id : info.DisplayName,
                     description = info.Description,
                     required = info.Required,
+                    dependencies = info.Dependencies,
                     versions = BuildVersionEntries(new[] { info.Version }),
                     loadStatus = PackageLoadStatus.Loaded
                 };
@@ -1708,9 +2113,10 @@ namespace com.tgs.packagemanager.editor
                 }
 
                 PackageJsonInfo info;
+                string json = null;
                 try
                 {
-                    var json = File.ReadAllText(packageJsonPath);
+                    json = File.ReadAllText(packageJsonPath);
                     info = JsonUtility.FromJson<PackageJsonInfo>(json);
                 }
                 catch (Exception ex)
@@ -1735,7 +2141,8 @@ namespace com.tgs.packagemanager.editor
                     Unity = info != null ? info.unity : null,
                     Version = version ?? string.Empty,
                     RootPath = directory,
-                    Required = info != null && info.required
+                    Required = info != null && info.required,
+                    Dependencies = info != null ? (info.dependencies ?? ParseDependenciesFromJson(json)) : null
                 });
 
                 var gitInitialized = Directory.Exists(Path.Combine(directory, ".git"));
@@ -2410,10 +2817,12 @@ namespace com.tgs.packagemanager.editor
                 }
 
                 yield return LoadPackageMetadata(repository, package);
+                ApplyLocalPackageOverrides(package);
                 Repaint();
             }
 
             yield return EnsureAutoUpdatedPackagesInstalled();
+            yield return EnsureDependenciesInstalled();
         }
 
         private IEnumerator EnsureAutoUpdatedPackagesInstalled()
@@ -2466,6 +2875,165 @@ namespace com.tgs.packagemanager.editor
             }
         }
 
+        private IEnumerator EnsureDependenciesInstalled()
+        {
+            if (_packages == null || _packages.Count == 0)
+            {
+                yield break;
+            }
+
+            var packageLookup = new Dictionary<string, PackageEntry>(StringComparer.OrdinalIgnoreCase);
+            foreach (var package in _packages)
+            {
+                if (package == null || string.IsNullOrEmpty(package.id))
+                {
+                    continue;
+                }
+
+                packageLookup[package.id] = package;
+            }
+
+            foreach (var package in _packages)
+            {
+                if (package == null || package.loadStatus != PackageLoadStatus.Loaded)
+                {
+                    continue;
+                }
+
+                if (package.dependencies == null || package.dependencies.Length == 0)
+                {
+                    continue;
+                }
+
+                var isPackageInstalled = IsPackageInstalled(package, out _, out _);
+                var shouldUpdateDependencies = ShouldAutoUpdate(package);
+                if (!isPackageInstalled && !shouldUpdateDependencies)
+                {
+                    continue;
+                }
+
+                foreach (var dependency in package.dependencies)
+                {
+                    if (!TryParseDependency(dependency, out var dependencyId, out var dependencyVersion)
+                        || string.IsNullOrEmpty(dependencyId))
+                    {
+                        continue;
+                    }
+
+                    if (!packageLookup.TryGetValue(dependencyId, out var dependencyPackage)
+                        || dependencyPackage.loadStatus != PackageLoadStatus.Loaded)
+                    {
+                        continue;
+                    }
+
+                    var targetVersion = !string.IsNullOrEmpty(dependencyVersion)
+                        ? dependencyVersion
+                        : GetLatestVersion(dependencyPackage);
+                    var reference = !string.IsNullOrEmpty(targetVersion)
+                        ? BuildVersionRef(dependencyPackage, targetVersion)
+                        : BuildPackageBranchRef(dependencyPackage.id);
+                    if (string.IsNullOrEmpty(reference))
+                    {
+                        continue;
+                    }
+
+                    var isDependencyInstalled = IsPackageInstalled(dependencyPackage, out var isUpmInstalled,
+                        out var installedVersion);
+                    if (!isDependencyInstalled)
+                    {
+                        yield return InstallPackage(dependencyPackage, reference, "Dependency installation", targetVersion);
+                        continue;
+                    }
+
+                    if (string.IsNullOrEmpty(targetVersion))
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(installedVersion, targetVersion, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!shouldUpdateDependencies)
+                    {
+                        continue;
+                    }
+
+                    if (isUpmInstalled)
+                    {
+                        yield return UpdatePackageViaUpm(dependencyPackage, reference, targetVersion);
+                    }
+                    else
+                    {
+                        yield return InstallPackage(dependencyPackage, reference, "Dependency update", targetVersion);
+                    }
+                }
+            }
+        }
+
+        private bool IsPackageInstalled(PackageEntry package, out bool isUpmInstalled, out string installedVersion)
+        {
+            var upmInfo = GetUpmPackageInfo(package);
+            isUpmInstalled = upmInfo != null;
+            if (isUpmInstalled)
+            {
+                installedVersion = upmInfo.version;
+                return true;
+            }
+
+            installedVersion = GetInstalledVersionCached(package);
+            return !string.IsNullOrEmpty(installedVersion);
+        }
+
+        private void ApplyLocalPackageOverrides(PackageEntry package)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                return;
+            }
+
+            var installedVersion = GetInstalledVersionCached(package);
+            if (string.IsNullOrEmpty(installedVersion))
+            {
+                return;
+            }
+
+            var localInfo = GetLocalPackageInfo(package.id);
+            if (localInfo == null)
+            {
+                return;
+            }
+
+            if (localInfo.Dependencies != null)
+            {
+                package.dependencies = localInfo.Dependencies;
+            }
+        }
+
+        private LocalPackageInfo GetLocalPackageInfo(string packageId)
+        {
+            if (string.IsNullOrEmpty(packageId))
+            {
+                return null;
+            }
+
+            foreach (var info in _localPackagesCache)
+            {
+                if (info == null || string.IsNullOrEmpty(info.Id))
+                {
+                    continue;
+                }
+
+                if (string.Equals(info.Id, packageId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return info;
+                }
+            }
+
+            return null;
+        }
+
         private static Texture GetPackageManagerIcon()
         {
             var iconNames = new[]
@@ -2510,7 +3078,7 @@ namespace com.tgs.packagemanager.editor
             {
                 return false;
             }
-
+    
             return package.required || IsAutoUpdateEnabled(package.id);
         }
 
@@ -2628,6 +3196,8 @@ namespace com.tgs.packagemanager.editor
 
             package.displayName = string.IsNullOrEmpty(info.displayName) ? info.name : info.displayName;
             package.description = info.description;
+            var parsedDependencies = info.dependencies ?? ParseDependenciesFromJson(json);
+            package.dependencies = parsedDependencies ?? Array.Empty<string>();
             package.required = info.required;
 
             if (package.versions == null || package.versions.Length == 0)
@@ -2859,7 +3429,7 @@ namespace com.tgs.packagemanager.editor
         }
 
         private static void WritePackageFiles(string packageRoot, string packageId, string name, string author,
-            string description, string version)
+            string description, string version, string unityVersion, bool required, string[] dependencies)
         {
             var readmePath = Path.Combine(packageRoot, "README.md");
             var changelogPath = Path.Combine(packageRoot, "CHANGELOG.md");
@@ -2877,13 +3447,17 @@ namespace com.tgs.packagemanager.editor
                 version + " - " + date + Environment.NewLine + "- Initial release." + Environment.NewLine);
 
             var safeDescription = description ?? string.Empty;
+            var safeUnityVersion = string.IsNullOrEmpty(unityVersion)
+                ? GetDefaultUnityVersion()
+                : unityVersion;
             var json = "{\n" +
                        "  \"name\": \"" + packageId + "\",\n" +
                        "  \"version\": \"" + version + "\",\n" +
                        "  \"displayName\": \"" + name + "\",\n" +
                        "  \"description\": \"" + EscapeJsonValue(safeDescription) + "\",\n" +
-                        "  \"unity\": \"2020.3\",\n" +
-                        "  \"required\": false,\n" +
+                        "  \"unity\": \"" + EscapeJsonValue(safeUnityVersion) + "\",\n" +
+                        "  \"required\": " + (required ? "true" : "false") + ",\n" +
+                        "  \"dependencies\": " + BuildDependenciesJson(dependencies, "  ") + ",\n" +
                        "  \"author\": {\n" +
                        "    \"name\": \"" + EscapeJsonValue(author) + "\"\n" +
                        "  }\n" +
@@ -3003,6 +3577,48 @@ namespace com.tgs.packagemanager.editor
             }
 
             return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        }
+
+        private static string BuildDependenciesJson(string[] dependencies, string indent)
+        {
+            if (dependencies == null || dependencies.Length == 0)
+            {
+                return "[]";
+            }
+
+            var list = new List<string>();
+            foreach (var dependency in dependencies)
+            {
+                if (string.IsNullOrEmpty(dependency))
+                {
+                    continue;
+                }
+
+                list.Add(dependency);
+            }
+
+            if (list.Count == 0)
+            {
+                return "[]";
+            }
+
+            var builder = new StringBuilder();
+            var entryIndent = indent + "  ";
+            builder.Append("[\n");
+            for (var i = 0; i < list.Count; i++)
+            {
+                builder.Append(entryIndent)
+                    .Append("\"")
+                    .Append(EscapeJsonValue(list[i]))
+                    .Append("\"");
+                if (i < list.Count - 1)
+                {
+                    builder.Append(",");
+                }
+                builder.Append("\n");
+            }
+            builder.Append(indent).Append("]");
+            return builder.ToString();
         }
 
         private static void TrySetupGit(string packageRoot, string repoUrl, string branchName, string token)
@@ -3289,6 +3905,7 @@ namespace com.tgs.packagemanager.editor
             public string Version;
             public string RootPath;
             public bool Required;
+            public string[] Dependencies;
         }
 
         private IEnumerator InstallPackage(PackageEntry package, string reference, string operation, string targetVersion)
@@ -3583,7 +4200,8 @@ namespace com.tgs.packagemanager.editor
 
             try
             {
-                WritePackageFiles(packageRoot, packageId, data.Name, data.Author, data.Description, version);
+                WritePackageFiles(packageRoot, packageId, data.Name, data.Author, data.Description, version,
+                    data.UnityVersion, data.Required, data.Dependencies);
             }
             catch (Exception ex)
             {
@@ -3710,6 +4328,16 @@ namespace com.tgs.packagemanager.editor
             return Path.Combine(projectRoot, "Assets", "TGSPackageManager", "packages");
         }
 
+        internal static string GetDefaultUnityVersion()
+        {
+            if (TryParseUnityVersion(Application.unityVersion, out var version))
+            {
+                return version.Major + "." + version.Minor;
+            }
+
+            return Application.unityVersion;
+        }
+
         private static string NormalizeManifestUrl(string url)
         {
             if (string.IsNullOrEmpty(url))
@@ -3820,6 +4448,7 @@ namespace com.tgs.packagemanager.editor
             public string pathInRepo;
             public string unity;
             public bool required;
+            public string[] dependencies;
             public PackageJsonAuthor author;
         }
 
@@ -3830,21 +4459,364 @@ namespace com.tgs.packagemanager.editor
         }
     }
 
+    internal class EditDependenciesWindow : EditorWindow
+    {
+        private ToolsPackageManagerWindow _owner;
+        private PackageEntry _package;
+        private string _packageRoot;
+        private readonly List<DependencySelection> _dependencies = new List<DependencySelection>();
+
+        private class DependencySelection
+        {
+            public string PackageId;
+            public string Version;
+        }
+
+        public static void Show(ToolsPackageManagerWindow owner, PackageEntry package, string packageRoot)
+        {
+            if (owner == null || package == null)
+            {
+                return;
+            }
+
+            var window = CreateInstance<EditDependenciesWindow>();
+            window._owner = owner;
+            window._package = package;
+            window._packageRoot = packageRoot;
+            window.titleContent = new GUIContent("Edit Dependencies");
+            window.minSize = new Vector2(360f, 220f);
+            window.SeedDependencies();
+            window.ShowUtility();
+        }
+
+        private void SeedDependencies()
+        {
+            _dependencies.Clear();
+            var dependencies = _package != null ? _package.dependencies : null;
+            if (dependencies == null || dependencies.Length == 0)
+            {
+                return;
+            }
+
+            foreach (var dependency in dependencies)
+            {
+                if (!ToolsPackageManagerWindow.TryParseDependency(dependency, out var packageId, out var version))
+                {
+                    continue;
+                }
+
+                _dependencies.Add(new DependencySelection
+                {
+                    PackageId = packageId,
+                    Version = version
+                });
+            }
+        }
+
+        private void OnGUI()
+        {
+            if (_package == null || _owner == null)
+            {
+                Close();
+                return;
+            }
+
+            EditorGUILayout.LabelField("Dependencies for " + (_package.displayName ?? _package.id), EditorStyles.boldLabel);
+            EditorGUILayout.Space();
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("+", GUILayout.Width(26f)))
+                {
+                    _dependencies.Add(new DependencySelection());
+                }
+
+                EditorGUI.BeginDisabledGroup(_dependencies.Count == 0);
+                if (GUILayout.Button("-", GUILayout.Width(26f)))
+                {
+                    _dependencies.RemoveAt(_dependencies.Count - 1);
+                }
+                EditorGUI.EndDisabledGroup();
+            }
+
+            var availablePackages = _owner.GetAvailablePackagesSnapshot();
+            if (availablePackages.Count == 0)
+            {
+                EditorGUILayout.HelpBox("Load the manifest to select package dependencies.", MessageType.Info);
+            }
+            else
+            {
+                var packageIds = new string[availablePackages.Count];
+                for (var i = 0; i < availablePackages.Count; i++)
+                {
+                    packageIds[i] = availablePackages[i].id;
+                }
+
+                for (var i = 0; i < _dependencies.Count; i++)
+                {
+                    var dependency = _dependencies[i];
+                    if (dependency == null)
+                    {
+                        dependency = new DependencySelection();
+                        _dependencies[i] = dependency;
+                    }
+
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        var selectedPackageIndex = 0;
+                        if (!string.IsNullOrEmpty(dependency.PackageId))
+                        {
+                            for (var index = 0; index < packageIds.Length; index++)
+                            {
+                                if (string.Equals(packageIds[index], dependency.PackageId, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    selectedPackageIndex = index;
+                                    break;
+                                }
+                            }
+                        }
+
+                        selectedPackageIndex = EditorGUILayout.Popup(selectedPackageIndex, packageIds);
+                        dependency.PackageId = packageIds[selectedPackageIndex];
+
+                        var selectedPackage = availablePackages[selectedPackageIndex];
+                        var versionOptions = BuildVersionOptions(selectedPackage);
+                        var selectedVersionIndex = 0;
+                        if (!string.IsNullOrEmpty(dependency.Version))
+                        {
+                            for (var index = 1; index < versionOptions.Length; index++)
+                            {
+                                if (string.Equals(versionOptions[index], dependency.Version, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    selectedVersionIndex = index;
+                                    break;
+                                }
+                            }
+                        }
+
+                        selectedVersionIndex = EditorGUILayout.Popup(selectedVersionIndex, versionOptions, GUILayout.Width(120f));
+                        dependency.Version = selectedVersionIndex == 0 ? null : versionOptions[selectedVersionIndex];
+                    }
+                }
+            }
+
+            EditorGUILayout.Space();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("Cancel"))
+                {
+                    Close();
+                }
+
+                EditorGUI.BeginDisabledGroup(string.IsNullOrEmpty(_packageRoot));
+                if (GUILayout.Button("Save"))
+                {
+                    _owner.UpdatePackageDependencies(_package, _packageRoot, BuildDependencyStrings());
+                    Close();
+                }
+                EditorGUI.EndDisabledGroup();
+            }
+        }
+
+        private static string[] BuildVersionOptions(PackageEntry package)
+        {
+            var versions = new List<string> { "(latest)" };
+            if (package != null && package.versions != null)
+            {
+                foreach (var version in package.versions)
+                {
+                    if (version == null || string.IsNullOrEmpty(version.version))
+                    {
+                        continue;
+                    }
+
+                    versions.Add(version.version);
+                }
+            }
+
+            return versions.ToArray();
+        }
+
+        private string[] BuildDependencyStrings()
+        {
+            if (_dependencies.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var list = new List<string>();
+            foreach (var dependency in _dependencies)
+            {
+                if (dependency == null || string.IsNullOrEmpty(dependency.PackageId))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(dependency.Version))
+                {
+                    list.Add(dependency.PackageId);
+                }
+                else
+                {
+                    list.Add(dependency.PackageId + "-v" + dependency.Version);
+                }
+            }
+
+            return list.ToArray();
+        }
+    }
+
     internal class CreatePackageWindow : EditorWindow
     {
         private string _name;
         private string _author;
         private string _description;
         private string _version;
+        private string _unityVersion;
+        private bool _required;
+        private readonly List<DependencySelection> _dependencies = new List<DependencySelection>();
         private ToolsPackageManagerWindow _owner;
+
+        private class DependencySelection
+        {
+            public string PackageId;
+            public string Version;
+        }
 
         public static void Show(ToolsPackageManagerWindow owner)
         {
             var window = CreateInstance<CreatePackageWindow>();
             window._owner = owner;
+            window._unityVersion = ToolsPackageManagerWindow.GetDefaultUnityVersion();
             window.titleContent = new GUIContent("Create Package");
-            window.minSize = new Vector2(360f, 220f);
-            window.ShowUtility();
+            window.minSize = new Vector2(360f, 270f);
+            window.Show();
+        }
+
+        private void DrawDependenciesSection()
+        {
+            EditorGUILayout.LabelField("Dependencies", EditorStyles.boldLabel);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button("+", GUILayout.Width(26f)))
+                {
+                    _dependencies.Add(new DependencySelection());
+                }
+
+                EditorGUI.BeginDisabledGroup(_dependencies.Count == 0);
+                if (GUILayout.Button("-", GUILayout.Width(26f)))
+                {
+                    _dependencies.RemoveAt(_dependencies.Count - 1);
+                }
+                EditorGUI.EndDisabledGroup();
+            }
+
+            var availablePackages = _owner != null ? _owner.GetAvailablePackagesSnapshot() : new List<PackageEntry>();
+            if (availablePackages.Count == 0)
+            {
+                EditorGUILayout.HelpBox("Load the manifest to select package dependencies.", MessageType.Info);
+                return;
+            }
+
+            var packageIds = new string[availablePackages.Count];
+            for (var i = 0; i < availablePackages.Count; i++)
+            {
+                packageIds[i] = availablePackages[i].id;
+            }
+
+            for (var i = 0; i < _dependencies.Count; i++)
+            {
+                var dependency = _dependencies[i];
+                if (dependency == null)
+                {
+                    dependency = new DependencySelection();
+                    _dependencies[i] = dependency;
+                }
+
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    var selectedPackageIndex = 0;
+                    if (!string.IsNullOrEmpty(dependency.PackageId))
+                    {
+                        for (var index = 0; index < packageIds.Length; index++)
+                        {
+                            if (string.Equals(packageIds[index], dependency.PackageId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                selectedPackageIndex = index;
+                                break;
+                            }
+                        }
+                    }
+
+                    selectedPackageIndex = EditorGUILayout.Popup(selectedPackageIndex, packageIds);
+                    dependency.PackageId = packageIds[selectedPackageIndex];
+
+                    var selectedPackage = availablePackages[selectedPackageIndex];
+                    var versionOptions = BuildVersionOptions(selectedPackage);
+                    var selectedVersionIndex = 0;
+                    if (!string.IsNullOrEmpty(dependency.Version))
+                    {
+                        for (var index = 1; index < versionOptions.Length; index++)
+                        {
+                            if (string.Equals(versionOptions[index], dependency.Version, StringComparison.OrdinalIgnoreCase))
+                            {
+                                selectedVersionIndex = index;
+                                break;
+                            }
+                        }
+                    }
+
+                    selectedVersionIndex = EditorGUILayout.Popup(selectedVersionIndex, versionOptions, GUILayout.Width(120f));
+                    dependency.Version = selectedVersionIndex == 0 ? null : versionOptions[selectedVersionIndex];
+                }
+            }
+        }
+
+        private static string[] BuildVersionOptions(PackageEntry package)
+        {
+            var versions = new List<string> { "(latest)" };
+            if (package != null && package.versions != null)
+            {
+                foreach (var version in package.versions)
+                {
+                    if (version == null || string.IsNullOrEmpty(version.version))
+                    {
+                        continue;
+                    }
+
+                    versions.Add(version.version);
+                }
+            }
+
+            return versions.ToArray();
+        }
+
+        private string[] BuildDependencyStrings()
+        {
+            if (_dependencies.Count == 0)
+            {
+                return Array.Empty<string>();
+            }
+
+            var list = new List<string>();
+            foreach (var dependency in _dependencies)
+            {
+                if (dependency == null || string.IsNullOrEmpty(dependency.PackageId))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(dependency.Version))
+                {
+                    list.Add(dependency.PackageId);
+                }
+                else
+                {
+                    list.Add(dependency.PackageId + "-v" + dependency.Version);
+                }
+            }
+
+            return list.ToArray();
         }
 
         private void OnGUI()
@@ -3856,6 +4828,11 @@ namespace com.tgs.packagemanager.editor
             _author = EditorGUILayout.TextField("Author", _author);
             _description = EditorGUILayout.TextField("Description", _description);
             _version = EditorGUILayout.TextField("Version", _version);
+            _unityVersion = EditorGUILayout.TextField("Unity Version", _unityVersion);
+            _required = EditorGUILayout.Toggle("Required", _required);
+            EditorGUILayout.HelpBox("Required packages will always be installed.", MessageType.Info);
+            EditorGUILayout.Space();
+            DrawDependenciesSection();
 
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
@@ -3873,7 +4850,10 @@ namespace com.tgs.packagemanager.editor
                         Name = _name,
                         Author = _author,
                         Description = _description,
-                        Version = _version
+                        Version = _version,
+                        UnityVersion = _unityVersion,
+                        Required = _required,
+                        Dependencies = BuildDependencyStrings()
                     };
                     _owner?.BeginCreatePackage(data);
                     Close();
@@ -3889,6 +4869,9 @@ namespace com.tgs.packagemanager.editor
         public string Author;
         public string Description;
         public string Version;
+        public string UnityVersion;
+        public bool Required;
+        public string[] Dependencies;
     }
 
     internal static class EditorCoroutineRunner
