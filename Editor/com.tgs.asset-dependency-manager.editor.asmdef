@@ -1,0 +1,10 @@
+{
+  "name": "com.tgs.asset-dependency-manager.editor",
+  "rootNamespace": "com.tgs.assetdependencymanager.editor",
+  "references": [
+    "com.tgs.asset-dependency-manager"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ]
+}

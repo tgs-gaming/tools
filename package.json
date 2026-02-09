@@ -1,0 +1,11 @@
+{
+  "name": "com.tgs.asset-dependency-manager",
+  "version": "1.0.0",
+  "displayName": "Asset Dependency Manager",
+  "description": "Manage, duplicate, export and import assets and their dependencies,",
+  "unity": "2020.3",
+  "required": true,
+  "author": {
+    "name": "Hugo Uchoas Borges"
+  }
+}
