@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.2 - 2026-02-09
+- UI: added "Current --> Rename To" header for Code References.
+- UI: added arrows between current values and rename inputs in Code References.
+
+
 ## 1.1.1 - 2026-02-09
 - Removed required field
 
