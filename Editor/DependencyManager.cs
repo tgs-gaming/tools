@@ -98,6 +98,7 @@ namespace com.tgs.assetdependencymanager.editor
 		private int _selectedTab;
 		private bool _previewFoldout = true;
 		private string _duplicateSubFolder = "_Duplicated_Assets";
+		private string _externalDestinationPath;
 		private int _objectPickerId = -1;
 		private int _objectPickerIndex = -1;
 		private string[] _cachedDirectDepsInput;
@@ -124,6 +125,15 @@ namespace com.tgs.assetdependencymanager.editor
 				_uniqueAssetGameDependencies = null;
 				_uniqueAssetGameDependenciesReplace = null;
 			}
+		}
+
+		public static void OpenWithImportDefaults(string packageRoot, string destinationPath, string duplicateSubFolder)
+		{
+			var window = GetWindow<DependencyManager>();
+			window.titleContent = new GUIContent("Asset Dependency Manager");
+			window._selectedTab = 0;
+			window.ApplyImportDefaults(packageRoot, destinationPath, duplicateSubFolder);
+			window.Show();
 		}
 
 		public static DefaultAsset NewAssetPath;
@@ -257,6 +267,63 @@ namespace com.tgs.assetdependencymanager.editor
 			DrawDependenciesSection();
 			DrawTabsSection();
 			EditorGUILayout.EndScrollView();
+		}
+
+		private void ApplyImportDefaults(string packageRoot, string destinationPath, string duplicateSubFolder)
+		{
+			var assetPath = NormalizeAssetPath(packageRoot);
+			var selectedAsset = string.IsNullOrEmpty(assetPath)
+				? null
+				: AssetDatabase.LoadAssetAtPath<Object>(assetPath);
+			OriginalAssets = new List<Object> { selectedAsset };
+			ResetDependencyCaches();
+			ResetDirectDependencyCache();
+			ResetCodeReferencesCache();
+
+			NewAssetPath = null;
+			_externalDestinationPath = null;
+			if (!string.IsNullOrEmpty(destinationPath))
+			{
+				var destinationAssetPath = NormalizeAssetPath(destinationPath);
+				if (!string.IsNullOrEmpty(destinationAssetPath))
+				{
+					NewAssetPath = AssetDatabase.LoadAssetAtPath<DefaultAsset>(destinationAssetPath);
+				}
+				else
+				{
+					_externalDestinationPath = destinationPath;
+				}
+			}
+
+			if (!string.IsNullOrWhiteSpace(duplicateSubFolder))
+			{
+				_duplicateSubFolder = duplicateSubFolder.Trim();
+			}
+		}
+
+		private static string NormalizeAssetPath(string path)
+		{
+			if (string.IsNullOrEmpty(path))
+			{
+				return null;
+			}
+
+			if (path.StartsWith("Assets", StringComparison.OrdinalIgnoreCase))
+			{
+				return path.Replace("\\", "/");
+			}
+
+			return TryGetAssetPathFromFullPath(path);
+		}
+
+		private string GetDestinationPath()
+		{
+			if (!string.IsNullOrEmpty(_externalDestinationPath))
+			{
+				return _externalDestinationPath;
+			}
+
+			return NewAssetPath == null ? null : AssetDatabase.GetAssetPath(NewAssetPath);
 		}
 
 		private void DrawSelectedAssetsSection()
@@ -396,7 +463,25 @@ namespace com.tgs.assetdependencymanager.editor
 			EditorGUILayout.LabelField("Copy To", _itemTitleStyle);
 			using (new EditorGUILayout.HorizontalScope())
 			{
-				NewAssetPath = EditorGUILayout.ObjectField("Destination", NewAssetPath, typeof(DefaultAsset), false) as DefaultAsset;
+				if (string.IsNullOrEmpty(_externalDestinationPath))
+				{
+					var newDestination = EditorGUILayout.ObjectField("Destination", NewAssetPath, typeof(DefaultAsset), false) as DefaultAsset;
+					if (newDestination != NewAssetPath)
+					{
+						NewAssetPath = newDestination;
+						if (NewAssetPath != null)
+						{
+							_externalDestinationPath = null;
+						}
+					}
+				}
+				else
+				{
+					EditorGUI.BeginDisabledGroup(true);
+					EditorGUILayout.TextField("Destination", _externalDestinationPath);
+					EditorGUI.EndDisabledGroup();
+				}
+
 				if (GUILayout.Button("Browse", GUILayout.Width(80f)))
 				{
 					var selected = EditorUtility.OpenFolderPanel("Select Destination Folder", Application.dataPath, string.Empty);
@@ -405,11 +490,13 @@ namespace com.tgs.assetdependencymanager.editor
 						var assetPath = TryGetAssetPathFromFullPath(selected);
 						if (string.IsNullOrEmpty(assetPath))
 						{
-							Debug.LogWarning("Selected folder must be inside the project Assets folder.");
+							NewAssetPath = null;
+							_externalDestinationPath = selected;
 						}
 						else
 						{
 							NewAssetPath = AssetDatabase.LoadAssetAtPath<DefaultAsset>(assetPath);
+							_externalDestinationPath = null;
 						}
 					}
 				}
@@ -434,18 +521,19 @@ namespace com.tgs.assetdependencymanager.editor
 			{
 				GUILayout.FlexibleSpace();
 				EditorGUI.BeginDisabledGroup(
-					OriginalAssets == null || OriginalAssets.Count == 0 || NewAssetPath == null || !codeReferencesComplete);
+					OriginalAssets == null || OriginalAssets.Count == 0 || string.IsNullOrEmpty(GetDestinationPath()) || !codeReferencesComplete);
 
 				if (GUILayout.Button("Duplicate Asset & Dependencies", GUILayout.Width(220)))
 				{
 					AssetDatabase.StartAssetEditing();
 					try
 					{
-						DuplicateAsset(OriginalAssets.ToArray(), NewAssetPath, GetDuplicateSubFolder());
-						var destinationPath = BuildDestinationBasePath(
-							AssetDatabase.GetAssetPath(NewAssetPath),
+						var destinationPath = GetDestinationPath();
+						DuplicateAsset(OriginalAssets.ToArray(), destinationPath, GetDuplicateSubFolder());
+						var resolvedDestination = BuildDestinationBasePath(
+							destinationPath,
 							GetDuplicateSubFolder());
-						Debug.Log($"DONE! New assets at {destinationPath}");
+						Debug.Log($"DONE! New assets at {resolvedDestination}");
 					}
 					catch (OperationCanceledException)
 					{
@@ -616,6 +704,13 @@ namespace com.tgs.assetdependencymanager.editor
 				_codeReferencesFoldout = EditorGUILayout.Foldout(_codeReferencesFoldout, "Code References", true);
 				if (_codeReferencesFoldout)
 				{
+					using (new EditorGUILayout.HorizontalScope())
+					{
+						GUILayout.Label("Current", _itemSubtitleStyle, GUILayout.MinWidth(200f));
+						GUILayout.Label("-->", _itemDescriptionStyle, GUILayout.Width(24f));
+						GUILayout.Label("Rename To", _itemSubtitleStyle);
+					}
+
 					DrawPatternRenameSection("Namespaces", codeRefs.NamespacePatterns, _namespaceRenames);
 					DrawPatternRenameSection("Assembly Definition filenames", codeRefs.AsmdefFilePatterns, _asmdefFileRenames);
 					DrawPatternRenameSection("Root Namespaces", codeRefs.RootNamespacePatterns, _rootNamespaceRenames);
@@ -639,6 +734,7 @@ namespace com.tgs.assetdependencymanager.editor
 			{
 				EditorGUILayout.BeginHorizontal();
 				GUILayout.Label(pattern, GUILayout.MinWidth(200f));
+				GUILayout.Label("-->", _itemDescriptionStyle, GUILayout.Width(24f));
 				if (!renames.TryGetValue(pattern, out var newValue) || string.IsNullOrEmpty(newValue))
 				{
 					newValue = pattern;
@@ -781,12 +877,12 @@ namespace com.tgs.assetdependencymanager.editor
 		private List<string> BuildDestinationPreview()
 		{
 			var previewItems = new List<string>();
-			if (NewAssetPath == null || OriginalAssets == null || OriginalAssets.Count == 0)
+			if (OriginalAssets == null || OriginalAssets.Count == 0)
 			{
 				return previewItems;
 			}
 
-			var destinationPath = AssetDatabase.GetAssetPath(NewAssetPath);
+			var destinationPath = GetDestinationPath();
 			if (string.IsNullOrEmpty(destinationPath))
 			{
 				return previewItems;
@@ -906,6 +1002,24 @@ namespace com.tgs.assetdependencymanager.editor
 
 			var relative = "Assets" + normalized.Substring(projectAssetsPath.Length);
 			return relative.Replace("\\", "/");
+		}
+
+		private static bool IsProjectAssetPath(string path, out string assetPath)
+		{
+			assetPath = null;
+			if (string.IsNullOrEmpty(path))
+			{
+				return false;
+			}
+
+			if (path.StartsWith("Assets", StringComparison.OrdinalIgnoreCase))
+			{
+				assetPath = path.Replace("\\", "/");
+				return true;
+			}
+
+			assetPath = TryGetAssetPathFromFullPath(path);
+			return !string.IsNullOrEmpty(assetPath);
 		}
 
 		private static void ResetDependencyCaches()
@@ -1376,21 +1490,28 @@ namespace com.tgs.assetdependencymanager.editor
 		// ========================== DUPLICATE ASSET ============================
 
 
-		private void DuplicateAsset(Object[] assets, DefaultAsset destination, string duplicateSubFolder)
+		private void DuplicateAsset(Object[] assets, string destinationPath, string duplicateSubFolder)
 		{
 			if (assets == null || assets.Length == 0)
 			{
 				return;
 			}
 
-			string destPath = AssetDatabase.GetAssetPath(destination);
-			var copiedFiles = CopySelectionToDestination(assets, destPath, duplicateSubFolder, true);
+			if (string.IsNullOrEmpty(destinationPath))
+			{
+				return;
+			}
+
+			var copiedFiles = CopySelectionToDestination(assets, destinationPath, duplicateSubFolder, true);
 			ApplyCodeReferenceRenames(copiedFiles);
 			RemapGuids(copiedFiles.ToList());
 			AssetDatabase.SaveAssets();
 			AssetDatabase.Refresh();
-			var importPath = BuildDestinationBasePath(destPath, duplicateSubFolder);
-			AssetDatabase.ImportAsset(importPath, ImportAssetOptions.ImportRecursive);
+			var importPath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
+			if (IsProjectAssetPath(importPath, out var assetPath))
+			{
+				AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ImportRecursive);
+			}
 		}
 
 		private static HashSet<string> CopySelectionToDestination(Object[] assets, string destinationPath, string duplicateSubFolder,
