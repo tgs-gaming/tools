@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.1 - 2026-02-10
+- Added required tabs
+
+
 ## 1.7.0 - 2026-02-09
 - Added 'Import to Game'
 
