@@ -4,7 +4,7 @@
   "displayName": "Asset Dependency Manager",
   "description": "Manage, duplicate, export and import assets and their dependencies,",
   "unity": "2020.3",
-  "required": false,
+  "required": true,
   "author": {
     "name": "Hugo Uchoas Borges"
   }
