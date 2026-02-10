@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.3 - 2026-02-10
+- Package marked as required
+
+
 ## 1.1.2 - 2026-02-09
 - UI: added "Current --> Rename To" header for Code References.
 - UI: added arrows between current values and rename inputs in Code References.
