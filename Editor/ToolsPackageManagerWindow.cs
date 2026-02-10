@@ -23,6 +23,7 @@ namespace com.tgs.packagemanager.editor
         private const string PrefsToken = "CTPM_GitHubToken";
         private const string PrefsRepoUrl = "CTPM_RepoUrl";
         private const string PrefsSelectedTab = "CTPM_SelectedTab";
+        private const string PrefsPackageListTab = "CTPM_PackageListTab";
         private const string PrefsAutoUpdatePrefix = "CTPM_AutoUpdate_";
         private const string PrefsAutoUpdateInterval = "CTPM_AutoUpdateIntervalSeconds";
 
@@ -51,6 +52,7 @@ namespace com.tgs.packagemanager.editor
         private bool _isBusy;
         private Vector2 _scroll;
         private int _selectedTab;
+        private int _selectedPackageListTab;
         private double _nextAutoUpdateTime;
         private double _autoUpdateIntervalSeconds;
 
@@ -74,6 +76,7 @@ namespace com.tgs.packagemanager.editor
         private readonly Dictionary<string, bool> _dependencyFoldouts = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private List<string> _repoTags = new List<string>();
         private static readonly string[] Tabs = { "Packages", "Settings" };
+        private static readonly string[] PackageListTabs = { "Embedded", "Available" };
         private static readonly Color InstalledPackageColor = new Color(0.77f, 0.90f, 0.77f);
         private static readonly Color LocalOnlyPackageColor = new Color(0.92f, 0.86f, 0.56f);
 
@@ -100,6 +103,7 @@ namespace com.tgs.packagemanager.editor
             _gitHubToken = EditorPrefs.GetString(PrefsToken, string.Empty);
             _repoUrl = EditorPrefs.GetString(PrefsRepoUrl, DefaultRepoUrl);
             _selectedTab = EditorPrefs.GetInt(PrefsSelectedTab, 0);
+            _selectedPackageListTab = Mathf.Clamp(EditorPrefs.GetInt(PrefsPackageListTab, 1), 0, PackageListTabs.Length - 1);
             AutoLoadManifest();
         }
 
@@ -399,14 +403,36 @@ namespace com.tgs.packagemanager.editor
 
             var isLocalRepo = IsLocalRepository();
             var listItems = BuildPackageListItems(_packages);
-            if (listItems.Count == 0)
+            var packageTab = GUILayout.Toolbar(_selectedPackageListTab, PackageListTabs);
+            if (packageTab != _selectedPackageListTab)
+            {
+                _selectedPackageListTab = packageTab;
+                EditorPrefs.SetInt(PrefsPackageListTab, _selectedPackageListTab);
+            }
+
+            var showRequired = _selectedPackageListTab == 0;
+            var filteredItems = new List<PackageListItem>();
+            foreach (var item in listItems)
+            {
+                if (item == null || item.Package == null)
+                {
+                    continue;
+                }
+
+                if ((item.Package.required && showRequired) || (!item.Package.required && !showRequired))
+                {
+                    filteredItems.Add(item);
+                }
+            }
+
+            if (filteredItems.Count == 0)
             {
                 EditorGUILayout.HelpBox("No packages available.", MessageType.Info);
                 return;
             }
 
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
-            foreach (var item in listItems)
+            foreach (var item in filteredItems)
             {
                 var package = item.Package;
                 if (package == null)
