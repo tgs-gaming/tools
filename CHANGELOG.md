@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.0 - 2026-02-13
+- Added multi-repository support
+
+
 ## 1.7.1 - 2026-02-10
 - Added required tabs
 
