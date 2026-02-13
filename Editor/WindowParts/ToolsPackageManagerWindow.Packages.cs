@@ -742,7 +742,9 @@ namespace com.tgs.packagemanager.editor
                 return;
             }
 
-            var installRoot = GetInstallRootForRepository(repository);
+            var installRoot = package.required
+                ? GetEmbeddedPackagesRootOrFallback()
+                : GetInstallRootForRepository(repository);
             var packageRoot = string.IsNullOrEmpty(installRoot) ? null : Path.Combine(installRoot, package.id);
             if (!Directory.Exists(packageRoot))
             {
@@ -971,7 +973,10 @@ namespace com.tgs.packagemanager.editor
                 return;
             }
 
-            var installRoot = GetInstallRootForRepository(repository);
+            var installRoot = package.required
+                ? GetEmbeddedPackagesRootOrFallback()
+                : GetInstallRootForRepository(repository);
+            
             var packageRoot = string.IsNullOrEmpty(installRoot) ? null : Path.Combine(installRoot, package.id);
             if (!Directory.Exists(packageRoot))
             {
