@@ -174,12 +174,35 @@ namespace com.tgs.packagemanager.editor
                 request.SetRequestHeader("Accept", "application/vnd.github.v3+json");
             }
 
-            if (!string.IsNullOrEmpty(token))
+            var authHeader = BuildAuthorizationHeader(token);
+            if (!string.IsNullOrWhiteSpace(authHeader))
             {
-                request.SetRequestHeader("Authorization", "token " + token);
+                request.SetRequestHeader("Authorization", authHeader);
             }
 
             return request;
+        }
+
+        private static string BuildAuthorizationHeader(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return string.Empty;
+            }
+
+            var normalized = token.Trim();
+            if (normalized.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                || normalized.StartsWith("token ", StringComparison.OrdinalIgnoreCase))
+            {
+                return normalized;
+            }
+
+            if (normalized.StartsWith("github_pat_", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Bearer " + normalized;
+            }
+
+            return "token " + normalized;
         }
 
         private GitHubRequestError CreateError(UnityWebRequest request)
