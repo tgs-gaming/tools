@@ -18,14 +18,18 @@ namespace com.tgs.packagemanager.editor
         private const string PrefsPackageListTab = "CTPM_PackageListTab";
         private const string PrefsAutoUpdatePrefix = "CTPM_AutoUpdate_";
         private const string PrefsAutoUpdateInterval = "CTPM_AutoUpdateIntervalInSeconds";
+        private const string PrefsBusyRecoveryDelay = "CTPM_BusyRecoveryDelayInSeconds";
         private const string PrefsRepositoriesPath = "CTPM_RepositoriesPath";
         private const string PrefsLocalRepositoriesPath = "CTPM_LocalRepositoriesPath";
         private const string PrefsEmbeddedPackagesPath = "CTPM_EmbeddedPackagesPath";
         private const string PrefsRepositoryTokenPrefix = "CTPM_RepoToken_";
+        private const string PrefsRunInBackground = "CTPM_RunInBackground";
 
         private const string UserAgent = "CompanyToolsPackageManager/1.0";
         private const string PackageBranchPrefix = "tool/";
         private const double DefaultAutoUpdateIntervalSeconds = 600.0;
+        private const double BusyRecoveryDelaySeconds = 3.0;
+        private const double LocalGitProbeIntervalSeconds = 20.0;
         private const double RefreshUnlockDelaySeconds = 2.0;
         private const string DefaultRepositoriesPathRelative = "../../repositories.json";
         private const string DefaultLocalRepositoriesPathRelative = "../../local-repositories.json";
@@ -41,6 +45,7 @@ namespace com.tgs.packagemanager.editor
         private string _statusMessage;
         private string _lastUpmUrl;
         private bool _isBusy;
+        private double _busyStartedAt;
         private double _refreshUnlockAt;
         private bool _refreshAfterCompilePending;
         private Vector2 _scroll;
@@ -49,6 +54,8 @@ namespace com.tgs.packagemanager.editor
         private int _selectedPackageListTab;
         private double _nextAutoUpdateTime;
         private double _autoUpdateIntervalSeconds;
+        private double _busyRecoveryDelaySeconds;
+        private double _nextLocalGitProbeAt;
 
         private List<PackageEntry> _packages = new List<PackageEntry>();
         private GitHubContentsClient _client;
@@ -65,12 +72,17 @@ namespace com.tgs.packagemanager.editor
         private readonly Dictionary<string, bool> _gitDetachedCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, bool> _remoteExistsCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _remoteUrlCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _packageRemoteFingerprintCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, PackageEntry> _packageMetadataCache = new Dictionary<string, PackageEntry>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _packageUnityRequirementByRemoteCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, bool> _packageCompatibilityByRemoteCache = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly List<LocalPackageInfo> _localPackagesCache = new List<LocalPackageInfo>();
         private readonly Dictionary<string, bool> _dependencyFoldouts = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _repositoryAccessErrors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private bool _manualPackageRefresh;
         private bool _usePackageListSnapshot;
         private bool _lastPackageRefreshSucceeded;
+        private bool _runInBackground;
         private PackageListSnapshot _packageListSnapshot;
         private readonly Dictionary<string, List<string>> _repositoryTags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         private List<RepositoryConfig> _repositories = new List<RepositoryConfig>();
@@ -94,6 +106,8 @@ namespace com.tgs.packagemanager.editor
             _installer = new PackageInstaller(_client);
             titleContent = new GUIContent("TGS Package Manager", GetPackageManagerIcon());
             _autoUpdateIntervalSeconds = EditorPrefs.GetFloat(PrefsAutoUpdateInterval, (float)DefaultAutoUpdateIntervalSeconds);
+            _busyRecoveryDelaySeconds = EditorPrefs.GetFloat(PrefsBusyRecoveryDelay, (float)BusyRecoveryDelaySeconds);
+            _busyRecoveryDelaySeconds = Math.Max(0f, _busyRecoveryDelaySeconds);
             _nextAutoUpdateTime = EditorApplication.timeSinceStartup + _autoUpdateIntervalSeconds;
             EditorApplication.update += OnEditorUpdate;
             CompilationPipeline.compilationFinished += OnCompilationFinished;
@@ -110,10 +124,14 @@ namespace com.tgs.packagemanager.editor
             _repositoriesPathRelative = EditorPrefs.GetString(PrefsRepositoriesPath, DefaultRepositoriesPathRelative);
             _localRepositoriesPathRelative = EditorPrefs.GetString(PrefsLocalRepositoriesPath, DefaultLocalRepositoriesPathRelative);
             _embeddedPackagesPathRelative = EditorPrefs.GetString(PrefsEmbeddedPackagesPath, DefaultEmbeddedPackagesPathRelative);
+            _runInBackground = IsRunInBackgroundChecked();
             _selectedTab = EditorPrefs.GetInt(PrefsSelectedTab, 0);
             _selectedPackageListTab = Mathf.Clamp(EditorPrefs.GetInt(PrefsPackageListTab, 2), 0, PackageListTabs.Length - 1);
             LoadRepositories();
-            AutoLoadManifest();
+            if (CanRunTasksForThisInstance())
+            {
+                AutoLoadManifest();
+            }
         }
 
         private void OnDisable()
@@ -124,6 +142,16 @@ namespace com.tgs.packagemanager.editor
 
         private void OnEditorUpdate()
         {
+            if (!CanRunTasksForThisInstance())
+            {
+                return;
+            }
+
+            if (TryRecoverFromStalledBusyState())
+            {
+                return;
+            }
+
             TryRunPendingRefresh();
             if (_isBusy)
             {
@@ -146,6 +174,12 @@ namespace com.tgs.packagemanager.editor
 
         private void OnCompilationFinished(object _)
         {
+            if (!CanRunTasksForThisInstance())
+            {
+                _refreshAfterCompilePending = false;
+                return;
+            }
+
             _refreshAfterCompilePending = true;
             TryRunPendingRefresh();
         }
@@ -158,17 +192,47 @@ namespace com.tgs.packagemanager.editor
                 return;
             }
 
+            EditorApplication.delayCall += RequestBackgroundDuplicateCleanup;
+
+            if (!IsBackgroundExecutionAllowedByPrefs())
+            {
+                return;
+            }
+
             EditorApplication.delayCall += RequestBackgroundSynchronize;
         }
 
         [DidReloadScripts]
         private static void OnScriptsReloaded()
         {
+            RequestBackgroundDuplicateCleanup();
+
+            if (!IsBackgroundExecutionAllowedByPrefs())
+            {
+                return;
+            }
+
             RequestBackgroundSynchronize();
+        }
+
+        private static void RequestBackgroundDuplicateCleanup()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return;
+            }
+
+            var window = GetOrCreateSyncWindow();
+            window?.SynchronizeManagedPackageDuplicatesOnly();
         }
 
         private static void RequestBackgroundSynchronize()
         {
+            if (!IsBackgroundExecutionAllowedByPrefs())
+            {
+                return;
+            }
+
             if (EditorApplication.isPlayingOrWillChangePlaymode)
             {
                 return;
@@ -200,16 +264,33 @@ namespace com.tgs.packagemanager.editor
 
         private void SynchronizeAfterCompile()
         {
+            if (!CanRunTasksForThisInstance())
+            {
+                return;
+            }
+
             if (_isBusy || EditorApplication.isPlayingOrWillChangePlaymode)
             {
                 return;
             }
+
+            SynchronizeManagedPackageDuplicates();
 
             if (_repositories == null || _repositories.Count == 0)
             {
                 return;
             }
             StartOperation(LoadManifest());
+        }
+
+        private void SynchronizeManagedPackageDuplicatesOnly()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                return;
+            }
+
+            SynchronizeManagedPackageDuplicates();
         }
 
         private bool IsRefreshLocked()
@@ -230,6 +311,7 @@ namespace com.tgs.packagemanager.editor
             }
 
             _isBusy = false;
+            _busyStartedAt = 0d;
             EditorUtility.ClearProgressBar();
             if (_manualPackageRefresh)
             {
@@ -238,8 +320,46 @@ namespace com.tgs.packagemanager.editor
             Repaint();
         }
 
+        private bool TryRecoverFromStalledBusyState()
+        {
+            if (!_isBusy)
+            {
+                return false;
+            }
+
+            var now = EditorApplication.timeSinceStartup;
+            if (_busyStartedAt > 0d && now - _busyStartedAt < _busyRecoveryDelaySeconds)
+            {
+                return false;
+            }
+
+            if (EditorCoroutineRunner.HasRunningCoroutines)
+            {
+                return false;
+            }
+
+            Debug.LogWarning("TGS Package Manager: detected stale busy state, forcing refresh.");
+            ForceUnlockBusyState("Busy watchdog");
+
+            if (_repositories == null || _repositories.Count == 0)
+            {
+                _statusMessage = "Recovered from stale busy state.";
+                return true;
+            }
+
+            BeginManualPackageRefresh();
+            StartOperation(LoadManifest());
+            return true;
+        }
+
         private void TryRunPendingRefresh()
         {
+            if (!CanRunTasksForThisInstance())
+            {
+                _refreshAfterCompilePending = false;
+                return;
+            }
+
             if (!_refreshAfterCompilePending)
             {
                 return;
@@ -269,6 +389,44 @@ namespace com.tgs.packagemanager.editor
             BeginManualPackageRefresh();
             StartOperation(LoadManifest());
             _refreshAfterCompilePending = false;
+        }
+
+        private static bool IsRunInBackgroundChecked()
+        {
+            return PlayerPrefs.GetInt(PrefsRunInBackground, 0) == 1;
+        }
+
+        private static bool IsBackgroundExecutionAllowedByPrefs()
+        {
+            return !IsRunInBackgroundChecked();
+        }
+
+        private bool IsBackgroundOnlyInstance()
+        {
+            return ReferenceEquals(this, _backgroundInstance)
+                || (hideFlags & HideFlags.HideAndDontSave) != 0;
+        }
+
+        private bool CanRunTasksForThisInstance()
+        {
+            return !IsBackgroundOnlyInstance() || !_runInBackground;
+        }
+
+        private void SetRunInBackground(bool enabled)
+        {
+            _runInBackground = enabled;
+            PlayerPrefs.SetInt(PrefsRunInBackground, enabled ? 1 : 0);
+            PlayerPrefs.Save();
+
+            if (enabled)
+            {
+                _refreshAfterCompilePending = false;
+                if (_backgroundInstance != null && !ReferenceEquals(_backgroundInstance, this))
+                {
+                    DestroyImmediate(_backgroundInstance);
+                    _backgroundInstance = null;
+                }
+            }
         }
 
         
@@ -1608,6 +1766,7 @@ namespace com.tgs.packagemanager.editor
             }
 
             _isBusy = true;
+            _busyStartedAt = EditorApplication.timeSinceStartup;
             EditorCoroutineRunner.StartCoroutine(WrapOperation(routine));
         }
 
@@ -1708,6 +1867,7 @@ namespace com.tgs.packagemanager.editor
             }
 
             _isBusy = false;
+            _busyStartedAt = 0d;
             EditorUtility.ClearProgressBar();
             Repaint();
         }

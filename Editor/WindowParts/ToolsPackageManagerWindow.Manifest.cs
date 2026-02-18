@@ -11,6 +11,7 @@ namespace com.tgs.packagemanager.editor
     {
         private IEnumerator LoadManifest()
         {
+            SynchronizeManagedPackageDuplicates();
             _statusMessage = "Loading packages...";
             _lastPackageRefreshSucceeded = false;
             _packages = new List<PackageEntry>();
@@ -27,6 +28,8 @@ namespace com.tgs.packagemanager.editor
             }
 
             var packageLookup = new Dictionary<string, PackageEntry>(StringComparer.OrdinalIgnoreCase);
+            var repositoryTagShas = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+            var repositoryBranchShas = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var repository in _repositories)
             {
@@ -39,9 +42,11 @@ namespace com.tgs.packagemanager.editor
                 var token = GetRepositoryAccessToken(repository);
 
                 List<string> tags = null;
+                Dictionary<string, string> tagShas = null;
                 string tagError = null;
                 yield return LoadRepositoryRefs(repository, repoUrl, token, true,
                     result => tags = result,
+                    shas => tagShas = shas,
                     error => tagError = error);
 
                 if (!string.IsNullOrEmpty(tagError))
@@ -57,12 +62,15 @@ namespace com.tgs.packagemanager.editor
                 if (!string.IsNullOrEmpty(repository.id))
                 {
                     _repositoryTags[repository.id] = tags;
+                    repositoryTagShas[repository.id] = tagShas ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 }
 
                 List<string> branches = null;
+                Dictionary<string, string> branchShas = null;
                 string branchError = null;
                 yield return LoadRepositoryRefs(repository, repoUrl, token, false,
                     result => branches = result,
+                    shas => branchShas = shas,
                     error => branchError = error);
 
                 if (!string.IsNullOrEmpty(branchError))
@@ -74,6 +82,11 @@ namespace com.tgs.packagemanager.editor
                 if (branches == null)
                 {
                     continue;
+                }
+
+                if (!string.IsNullOrEmpty(repository.id))
+                {
+                    repositoryBranchShas[repository.id] = branchShas ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 }
 
                 foreach (var branch in branches)
@@ -144,7 +157,17 @@ namespace com.tgs.packagemanager.editor
                 }
 
                 var tags = GetRepositoryTags(repository);
+                var tagShas = GetRepositoryRefShas(repository, repositoryTagShas);
+                var branchShas = GetRepositoryRefShas(repository, repositoryBranchShas);
+                if (TryApplyCachedPackageMetadata(package, repository, tags, tagShas, branchShas))
+                {
+                    ApplyLocalPackageOverrides(package);
+                    Repaint();
+                    continue;
+                }
+
                 yield return LoadPackageMetadata(repository, package, tags);
+                CachePackageMetadataIfLoaded(package, repository, tags, tagShas, branchShas);
                 ApplyLocalPackageOverrides(package);
                 Repaint();
             }
@@ -153,6 +176,77 @@ namespace com.tgs.packagemanager.editor
             yield return EnsureDependenciesInstalled();
             _statusMessage = "Packages loaded.";
             _lastPackageRefreshSucceeded = _packages.Count > 0;
+        }
+
+        private IEnumerator RefreshSinglePackage(PackageEntry package)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id))
+            {
+                yield break;
+            }
+
+            var repository = GetRepositoryConfigForPackage(package);
+            if (repository == null)
+            {
+                RefreshLocalCacheForPackage(package);
+                ApplyLocalPackageOverrides(package);
+                Repaint();
+                yield break;
+            }
+
+            var repoUrl = GetRepositoryUrl(repository);
+            var token = GetRepositoryAccessToken(repository);
+
+            List<string> tags = null;
+            Dictionary<string, string> tagShas = null;
+            string tagError = null;
+            yield return LoadRepositoryRefs(repository, repoUrl, token, true,
+                result => tags = result,
+                shas => tagShas = shas,
+                error => tagError = error);
+
+            Dictionary<string, string> branchShas = null;
+            if (string.IsNullOrEmpty(tagError))
+            {
+                string branchError = null;
+                yield return LoadRepositoryRefs(repository, repoUrl, token, false,
+                    _ => { },
+                    shas => branchShas = shas,
+                    error => branchError = error);
+
+                if (!string.IsNullOrEmpty(branchError))
+                {
+                    branchShas = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                }
+            }
+
+            if (!string.IsNullOrEmpty(tagError))
+            {
+                RecordRepositoryAccessError(repository, tagError, "Tags");
+                tags = GetRepositoryTags(repository);
+            }
+
+            if (tags == null)
+            {
+                tags = new List<string>();
+            }
+
+            if (!string.IsNullOrEmpty(repository.id))
+            {
+                _repositoryTags[repository.id] = tags;
+            }
+
+            yield return LoadPackageMetadata(repository, package, tags);
+            CachePackageMetadataIfLoaded(
+                package,
+                repository,
+                tags,
+                tagShas ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                branchShas ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+
+            RefreshLocalCacheForPackage(package);
+            ApplyLocalPackageOverrides(package);
+            Repaint();
         }
 
         private List<string> GetRepositoryTags(RepositoryConfig repository)
@@ -167,8 +261,21 @@ namespace com.tgs.packagemanager.editor
                 : new List<string>();
         }
 
+        private static Dictionary<string, string> GetRepositoryRefShas(RepositoryConfig repository,
+            Dictionary<string, Dictionary<string, string>> byRepository)
+        {
+            if (repository == null || string.IsNullOrEmpty(repository.id) || byRepository == null)
+            {
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            return byRepository.TryGetValue(repository.id, out var shas) && shas != null
+                ? shas
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
         private IEnumerator LoadRepositoryRefs(RepositoryConfig repository, string repoUrl, string token, bool loadTags,
-            Action<List<string>> onSuccess, Action<string> onError)
+            Action<List<string>> onSuccess, Action<Dictionary<string, string>> onRefShas, Action<string> onError)
         {
             if (ShouldUseRestAccess(repository))
             {
@@ -193,6 +300,7 @@ namespace com.tgs.packagemanager.editor
                     }
 
                     onSuccess?.Invoke(ExtractRemoteTagNames(remoteTags));
+                    onRefShas?.Invoke(ExtractRemoteTagShas(remoteTags));
                 }
                 else
                 {
@@ -208,6 +316,7 @@ namespace com.tgs.packagemanager.editor
                     }
 
                     onSuccess?.Invoke(ExtractRemoteBranchNames(remoteBranches));
+                    onRefShas?.Invoke(ExtractRemoteBranchShas(remoteBranches));
                 }
 
                 yield break;
@@ -215,13 +324,15 @@ namespace com.tgs.packagemanager.editor
 
             var typeArgument = loadTags ? "--tags" : "--heads";
             var refPrefix = loadTags ? "refs/tags/" : "refs/heads/";
-            if (!TryGetRemoteRefs(repository, repoUrl, token, typeArgument, refPrefix, out var refs, out var error))
+            if (!TryGetRemoteRefs(repository, repoUrl, token, typeArgument, refPrefix, out var refs, out var refShas,
+                    out var error))
             {
                 onError?.Invoke(error);
                 yield break;
             }
 
             onSuccess?.Invoke(refs);
+            onRefShas?.Invoke(refShas);
         }
 
         private static List<string> ExtractRemoteTagNames(GitHubTag[] tags)
@@ -245,6 +356,28 @@ namespace com.tgs.packagemanager.editor
             return RemoveDuplicateRefs(names);
         }
 
+        private static Dictionary<string, string> ExtractRemoteTagShas(GitHubTag[] tags)
+        {
+            var shas = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (tags == null || tags.Length == 0)
+            {
+                return shas;
+            }
+
+            foreach (var tag in tags)
+            {
+                var name = tag?.name;
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                shas[name.Trim()] = tag.commit != null ? tag.commit.sha : string.Empty;
+            }
+
+            return shas;
+        }
+
         private static List<string> ExtractRemoteBranchNames(GitHubBranch[] branches)
         {
             var names = new List<string>();
@@ -264,6 +397,222 @@ namespace com.tgs.packagemanager.editor
             }
 
             return RemoveDuplicateRefs(names);
+        }
+
+        private static Dictionary<string, string> ExtractRemoteBranchShas(GitHubBranch[] branches)
+        {
+            var shas = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (branches == null || branches.Length == 0)
+            {
+                return shas;
+            }
+
+            foreach (var branch in branches)
+            {
+                var name = branch?.name;
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    continue;
+                }
+
+                shas[name.Trim()] = branch.commit != null ? branch.commit.sha : string.Empty;
+            }
+
+            return shas;
+        }
+
+        private bool TryApplyCachedPackageMetadata(PackageEntry package, RepositoryConfig repository,
+            List<string> tags, Dictionary<string, string> tagShas, Dictionary<string, string> branchShas)
+        {
+            if (package == null || string.IsNullOrEmpty(package.id) || repository == null)
+            {
+                return false;
+            }
+
+            var cacheKey = BuildPackageCacheKey(repository, package.id);
+            var fingerprint = BuildRemoteFingerprint(package.id, tags, tagShas, branchShas);
+            if (!_packageRemoteFingerprintCache.TryGetValue(cacheKey, out var cachedFingerprint)
+                || !string.Equals(cachedFingerprint, fingerprint, StringComparison.Ordinal)
+                || !_packageMetadataCache.TryGetValue(cacheKey, out var cachedMetadata)
+                || cachedMetadata == null)
+            {
+                return false;
+            }
+
+            ApplyCachedPackageMetadata(package, cachedMetadata);
+            if (_packageUnityRequirementByRemoteCache.TryGetValue(cacheKey, out var cachedUnity))
+            {
+                _packageUnityRequirements[package.id] = cachedUnity ?? string.Empty;
+                if (_packageCompatibilityByRemoteCache.TryGetValue(cacheKey, out var cachedCompatibility))
+                {
+                    _packageCompatibility[package.id] = cachedCompatibility;
+                }
+                else
+                {
+                    _packageCompatibility[package.id] = string.IsNullOrEmpty(cachedUnity) || IsUnityCompatible(cachedUnity);
+                }
+            }
+            else
+            {
+                _packageUnityRequirements[package.id] = string.Empty;
+                _packageCompatibility[package.id] = true;
+            }
+            return true;
+        }
+
+        private void CachePackageMetadataIfLoaded(PackageEntry package, RepositoryConfig repository,
+            List<string> tags, Dictionary<string, string> tagShas, Dictionary<string, string> branchShas)
+        {
+            if (package == null || repository == null || string.IsNullOrEmpty(package.id))
+            {
+                return;
+            }
+
+            var cacheKey = BuildPackageCacheKey(repository, package.id);
+            if (package.loadStatus != PackageLoadStatus.Loaded)
+            {
+                _packageRemoteFingerprintCache.Remove(cacheKey);
+                _packageMetadataCache.Remove(cacheKey);
+                _packageUnityRequirementByRemoteCache.Remove(cacheKey);
+                _packageCompatibilityByRemoteCache.Remove(cacheKey);
+                return;
+            }
+
+            _packageRemoteFingerprintCache[cacheKey] = BuildRemoteFingerprint(package.id, tags, tagShas, branchShas);
+            _packageMetadataCache[cacheKey] = ClonePackageMetadata(package);
+
+            if (_packageUnityRequirements.TryGetValue(package.id, out var unityRequirement))
+            {
+                _packageUnityRequirementByRemoteCache[cacheKey] = unityRequirement ?? string.Empty;
+            }
+            else
+            {
+                _packageUnityRequirementByRemoteCache[cacheKey] = string.Empty;
+            }
+
+            if (_packageCompatibility.TryGetValue(package.id, out var compatibility))
+            {
+                _packageCompatibilityByRemoteCache[cacheKey] = compatibility;
+            }
+            else
+            {
+                _packageCompatibilityByRemoteCache[cacheKey] = true;
+            }
+        }
+
+        private static string BuildPackageCacheKey(RepositoryConfig repository, string packageId)
+        {
+            var repositoryKey = !string.IsNullOrEmpty(repository?.id)
+                ? repository.id
+                : (repository?.url ?? string.Empty);
+            return repositoryKey + "|" + (packageId ?? string.Empty);
+        }
+
+        private static string BuildRemoteFingerprint(string packageId, List<string> tags,
+            Dictionary<string, string> tagShas, Dictionary<string, string> branchShas)
+        {
+            var branchRef = BuildPackageBranchRef(packageId);
+            var branchSha = string.Empty;
+            if (branchShas != null)
+            {
+                branchShas.TryGetValue(branchRef, out branchSha);
+            }
+
+            var matchingTagLines = new List<string>();
+            var tagPrefix = (packageId ?? string.Empty) + "-v";
+            if (tags != null)
+            {
+                foreach (var tag in tags)
+                {
+                    if (string.IsNullOrWhiteSpace(tag)
+                        || !tag.StartsWith(tagPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var trimmedTag = tag.Trim();
+                    var tagSha = string.Empty;
+                    if (tagShas != null)
+                    {
+                        tagShas.TryGetValue(trimmedTag, out tagSha);
+                    }
+
+                    matchingTagLines.Add(trimmedTag + "@" + (tagSha ?? string.Empty));
+                }
+            }
+
+            matchingTagLines.Sort(StringComparer.OrdinalIgnoreCase);
+            return "branch=" + (branchSha ?? string.Empty) + ";tags=" + string.Join("|", matchingTagLines);
+        }
+
+        private static PackageEntry ClonePackageMetadata(PackageEntry package)
+        {
+            if (package == null)
+            {
+                return null;
+            }
+
+            var clone = new PackageEntry
+            {
+                id = package.id,
+                displayName = package.displayName,
+                description = package.description,
+                author = package.author,
+                required = package.required,
+                pathInRepo = package.pathInRepo,
+                repositoryId = package.repositoryId,
+                loadStatus = package.loadStatus,
+                loadError = package.loadError,
+                dependencies = package.dependencies != null ? (string[])package.dependencies.Clone() : null
+            };
+
+            if (package.versions != null)
+            {
+                clone.versions = new PackageVersion[package.versions.Length];
+                for (var i = 0; i < package.versions.Length; i++)
+                {
+                    var version = package.versions[i];
+                    clone.versions[i] = version == null
+                        ? null
+                        : new PackageVersion { version = version.version };
+                }
+            }
+
+            return clone;
+        }
+
+        private static void ApplyCachedPackageMetadata(PackageEntry target, PackageEntry cached)
+        {
+            if (target == null || cached == null)
+            {
+                return;
+            }
+
+            target.displayName = cached.displayName;
+            target.description = cached.description;
+            target.author = cached.author;
+            target.required = cached.required;
+            target.pathInRepo = cached.pathInRepo;
+            target.repositoryId = cached.repositoryId;
+            target.loadStatus = cached.loadStatus;
+            target.loadError = cached.loadError;
+            target.dependencies = cached.dependencies != null ? (string[])cached.dependencies.Clone() : null;
+
+            if (cached.versions != null)
+            {
+                target.versions = new PackageVersion[cached.versions.Length];
+                for (var i = 0; i < cached.versions.Length; i++)
+                {
+                    var version = cached.versions[i];
+                    target.versions[i] = version == null
+                        ? null
+                        : new PackageVersion { version = version.version };
+                }
+            }
+            else
+            {
+                target.versions = null;
+            }
         }
 
         private static List<string> RemoveDuplicateRefs(List<string> refs)
@@ -622,9 +971,11 @@ namespace com.tgs.packagemanager.editor
         }
 
         private static bool TryGetRemoteRefs(RepositoryConfig repository, string repoUrl, string token,
-            string typeArgument, string refPrefix, out List<string> refs, out string error)
+            string typeArgument, string refPrefix, out List<string> refs, out Dictionary<string, string> refShas,
+            out string error)
         {
             refs = new List<string>();
+            refShas = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             error = null;
 
             if (string.IsNullOrWhiteSpace(repoUrl))
@@ -667,6 +1018,8 @@ namespace com.tgs.packagemanager.editor
                     continue;
                 }
 
+                var refSha = parts[0]?.Trim() ?? string.Empty;
+                var isPeeledTag = refName.EndsWith("^{}", StringComparison.Ordinal);
                 if (refName.EndsWith("^{}", StringComparison.Ordinal))
                 {
                     refName = refName.Substring(0, refName.Length - 3);
@@ -676,6 +1029,12 @@ namespace com.tgs.packagemanager.editor
                 if (string.IsNullOrEmpty(name))
                 {
                     continue;
+                }
+
+                if (!string.IsNullOrEmpty(refSha)
+                    && (!refShas.ContainsKey(name) || isPeeledTag))
+                {
+                    refShas[name] = refSha;
                 }
 
                 if (seen.Add(name))

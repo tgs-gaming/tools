@@ -18,6 +18,8 @@ namespace com.tgs.packagemanager.editor
         private static readonly List<CoroutineState> Routines = new List<CoroutineState>();
         private static bool _isHooked;
 
+        internal static bool HasRunningCoroutines => Routines.Count > 0;
+
         public static void StartCoroutine(IEnumerator routine)
         {
             if (routine == null)

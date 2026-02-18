@@ -32,6 +32,28 @@ namespace com.tgs.packagemanager.editor
             }
             EditorGUILayout.Space();
             DrawStatus();
+            DrawBusyWatermark();
+        }
+
+        private void DrawBusyWatermark()
+        {
+            if (!_isBusy)
+            {
+                return;
+            }
+
+            var previousColor = GUI.color;
+            var overlayRect = new Rect(0f, 0f, position.width, position.height);
+            var overlayStyle = new GUIStyle(EditorStyles.boldLabel)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 26,
+                wordWrap = false
+            };
+
+            GUI.color = new Color(1f, 1f, 1f, 0.18f);
+            GUI.Label(overlayRect, "REFRESH IN PROGRESS", overlayStyle);
+            GUI.color = previousColor;
         }
 
         private void DrawSettingsSection()
@@ -61,12 +83,27 @@ namespace com.tgs.packagemanager.editor
             EditorGUILayout.LabelField("Auto Update", EditorStyles.boldLabel);
 
             EditorGUI.BeginChangeCheck();
-            var interval = EditorGUILayout.FloatField("Interval (seconds)", (float)_autoUpdateIntervalSeconds);
+            var runInBackground = EditorGUILayout.Toggle("Run in Background", _runInBackground);
+            if (EditorGUI.EndChangeCheck())
+            {
+                SetRunInBackground(runInBackground);
+            }
+
+            EditorGUI.BeginChangeCheck();
+            var interval = EditorGUILayout.FloatField("Interval (Seconds)", (float)_autoUpdateIntervalSeconds);
             if (EditorGUI.EndChangeCheck())
             {
                 _autoUpdateIntervalSeconds = Math.Max(0, interval);
                 EditorPrefs.SetFloat(PrefsAutoUpdateInterval, (float)_autoUpdateIntervalSeconds);
                 _nextAutoUpdateTime = EditorApplication.timeSinceStartup + _autoUpdateIntervalSeconds;
+            }
+
+            EditorGUI.BeginChangeCheck();
+            var busyRecoveryDelay = EditorGUILayout.FloatField("Busy Recovery Delay (Seconds)", (float)_busyRecoveryDelaySeconds);
+            if (EditorGUI.EndChangeCheck())
+            {
+                _busyRecoveryDelaySeconds = Math.Max(0f, busyRecoveryDelay);
+                EditorPrefs.SetFloat(PrefsBusyRecoveryDelay, (float)_busyRecoveryDelaySeconds);
             }
         }
 

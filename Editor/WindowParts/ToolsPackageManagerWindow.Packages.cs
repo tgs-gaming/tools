@@ -795,8 +795,7 @@ namespace com.tgs.packagemanager.editor
             RunGit(packageRoot, "add -A", token);
             RunGit(packageRoot, "commit -m \"" + EscapeGitMessage(message) + "\"", token, logErrors: true);
             _statusMessage = "Committed " + package.id + ".";
-            RefreshLocalCache();
-            StartOperation(LoadManifest());
+            StartOperation(RefreshSinglePackage(package));
         }
 
         public void CreateVersionTag(PackageEntry package, string version, string releaseNotes)
@@ -871,8 +870,7 @@ namespace com.tgs.packagemanager.editor
                 "push " + GetRepositoryUrl(repository) + " " + tag,
                 true);
             _statusMessage = "Created tag " + tag + ".";
-            RefreshLocalCache();
-            StartOperation(LoadManifest());
+            StartOperation(RefreshSinglePackage(package));
         }
 
         private bool TagExists(string packageRoot, string remoteUrl, string tag)
@@ -1002,8 +1000,7 @@ namespace com.tgs.packagemanager.editor
                 true);
             
             _statusMessage = "Pushed " + package.id + ".";
-            RefreshLocalCache();
-            StartOperation(LoadManifest());
+            StartOperation(RefreshSinglePackage(package));
         }
 
         private void UninstallPackageSafe(PackageEntry package)

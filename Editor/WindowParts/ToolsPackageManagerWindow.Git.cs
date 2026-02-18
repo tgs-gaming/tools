@@ -555,7 +555,7 @@ namespace com.tgs.packagemanager.editor
             return output.IndexOf(contains, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static string RunGitGetOutput(string workingDirectory, string arguments, string token)
+        private static string RunGitGetOutput(string workingDirectory, string arguments, string token, bool logCommandFailed = false, bool logCommandException = true)
         {
             var rewrittenArguments = RewriteOriginPushArguments(workingDirectory, arguments, token);
             var rewrittenUsesTokenInUrl = !string.Equals(rewrittenArguments, arguments, StringComparison.Ordinal);
@@ -584,7 +584,8 @@ namespace com.tgs.packagemanager.editor
 
                     if (process.ExitCode != 0)
                     {
-                        Debug.LogWarning("Git command failed (" + arguments + "): " + error);
+                        if (logCommandFailed)
+                            Debug.LogWarning("Git command failed (" + arguments + "): " + error);
                         return null;
                     }
 
@@ -593,7 +594,8 @@ namespace com.tgs.packagemanager.editor
             }
             catch (Exception ex)
             {
-                Debug.LogWarning("Git command exception (" + arguments + "): " + ex.Message);
+                if (logCommandFailed)
+                    Debug.LogError("Git command exception (" + arguments + "): " + ex.Message);
                 return null;
             }
         }
