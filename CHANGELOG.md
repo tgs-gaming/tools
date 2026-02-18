@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.0 - 2026-02-18
+- Performance Optimizations
+
+
 ## 1.8.0 - 2026-02-13
 - Added multi-repository support
 
