@@ -176,6 +176,7 @@ namespace com.tgs.packagemanager.editor
             yield return EnsureDependenciesInstalled();
             _statusMessage = "Packages loaded.";
             _lastPackageRefreshSucceeded = _packages.Count > 0;
+            SaveWindowStateToDisk();
         }
 
         private IEnumerator RefreshSinglePackage(PackageEntry package)
@@ -246,6 +247,7 @@ namespace com.tgs.packagemanager.editor
 
             RefreshLocalCacheForPackage(package);
             ApplyLocalPackageOverrides(package);
+            SaveWindowStateToDisk();
             Repaint();
         }
 

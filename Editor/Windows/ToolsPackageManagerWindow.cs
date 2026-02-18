@@ -24,6 +24,8 @@ namespace com.tgs.packagemanager.editor
         private const string PrefsEmbeddedPackagesPath = "CTPM_EmbeddedPackagesPath";
         private const string PrefsRepositoryTokenPrefix = "CTPM_RepoToken_";
         private const string PrefsRunInBackground = "CTPM_RunInBackground";
+        private const string PrefsUseCachedStateOnOpen = "CTPM_UseCachedStateOnOpen";
+        private const string WindowStateFileName = "window-state.json";
 
         private const string UserAgent = "CompanyToolsPackageManager/1.0";
         private const string PackageBranchPrefix = "tool/";
@@ -84,6 +86,7 @@ namespace com.tgs.packagemanager.editor
         private bool _usePackageListSnapshot;
         private bool _lastPackageRefreshSucceeded;
         private bool _runInBackground;
+        private bool _useCachedStateOnOpen;
         private PackageListSnapshot _packageListSnapshot;
         private readonly Dictionary<string, List<string>> _repositoryTags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         private List<RepositoryConfig> _repositories = new List<RepositoryConfig>();
@@ -126,10 +129,12 @@ namespace com.tgs.packagemanager.editor
             _localRepositoriesPathRelative = EditorPrefs.GetString(PrefsLocalRepositoriesPath, DefaultLocalRepositoriesPathRelative);
             _embeddedPackagesPathRelative = EditorPrefs.GetString(PrefsEmbeddedPackagesPath, DefaultEmbeddedPackagesPathRelative);
             _runInBackground = IsRunInBackgroundChecked();
+            _useCachedStateOnOpen = EditorPrefs.GetBool(PrefsUseCachedStateOnOpen, true);
             _selectedTab = EditorPrefs.GetInt(PrefsSelectedTab, 0);
             _selectedPackageListTab = Mathf.Clamp(EditorPrefs.GetInt(PrefsPackageListTab, 2), 0, PackageListTabs.Length - 1);
             LoadRepositories();
-            if (CanRunTasksForThisInstance())
+            var restoredFromCache = TryRestoreWindowStateFromDisk();
+            if (!restoredFromCache && CanRunTasksForThisInstance())
             {
                 AutoLoadManifest();
             }
@@ -137,6 +142,7 @@ namespace com.tgs.packagemanager.editor
 
         private void OnDisable()
         {
+            SaveWindowStateToDisk();
             EditorApplication.update -= OnEditorUpdate;
             CompilationPipeline.compilationFinished -= OnCompilationFinished;
         }
@@ -391,8 +397,7 @@ namespace com.tgs.packagemanager.editor
 
         private bool IsBackgroundOnlyInstance()
         {
-            return ReferenceEquals(this, _backgroundInstance)
-                || (hideFlags & HideFlags.HideAndDontSave) != 0;
+            return ReferenceEquals(this, _backgroundInstance);
         }
 
         private bool CanRunTasksForThisInstance()
@@ -413,6 +418,28 @@ namespace com.tgs.packagemanager.editor
                 {
                     DestroyImmediate(_backgroundInstance);
                     _backgroundInstance = null;
+                }
+            }
+        }
+
+        private void SetUseCachedStateOnOpen(bool enabled)
+        {
+            _useCachedStateOnOpen = enabled;
+            EditorPrefs.SetBool(PrefsUseCachedStateOnOpen, enabled);
+
+            if (!enabled)
+            {
+                try
+                {
+                    var filePath = GetWindowStateFilePath();
+                    if (File.Exists(filePath))
+                    {
+                        File.Delete(filePath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning("Package Manager cache: failed to delete window state: " + ex.Message);
                 }
             }
         }
@@ -1686,6 +1713,7 @@ namespace com.tgs.packagemanager.editor
             }
         }
 
+        [Serializable]
         private class LocalPackageInfo
         {
             public string Id;
@@ -1697,6 +1725,59 @@ namespace com.tgs.packagemanager.editor
             public bool Required;
             public string[] Dependencies;
             public string RepositoryUrl;
+        }
+
+        [Serializable]
+        private class PersistedWindowState
+        {
+            public int Version;
+            public PersistedPackageEntry[] Packages;
+            public KeyValueString[] PackageUnityRequirements;
+            public KeyValueBool[] PackageCompatibility;
+            public LocalPackageInfo[] LocalPackagesCache;
+            public KeyValueString[] InstalledVersionsCache;
+            public KeyValueBool[] PendingPushCache;
+            public KeyValueBool[] PendingCommitCache;
+            public KeyValueBool[] GitInitializedCache;
+            public KeyValueString[] GitHeadCache;
+            public KeyValueString[] GitHeadMessageCache;
+            public KeyValueBool[] GitDetachedCache;
+            public KeyValueBool[] RemoteExistsCache;
+            public KeyValueString[] RemoteUrlCache;
+            public string PackageListSignature;
+            public string SavedAtUtc;
+        }
+
+        [Serializable]
+        private class PersistedPackageEntry
+        {
+            public string id;
+            public string displayName;
+            public string description;
+            public string[] dependencies;
+            public string pathInRepo;
+            public string defaultRef;
+            public string refLatest;
+            public bool required;
+            public string[] versions;
+            public string author;
+            public string repositoryId;
+            public int loadStatus;
+            public string loadError;
+        }
+
+        [Serializable]
+        private class KeyValueString
+        {
+            public string Key;
+            public string Value;
+        }
+
+        [Serializable]
+        private class KeyValueBool
+        {
+            public string Key;
+            public bool Value;
         }
 
         private class PackageListSnapshot

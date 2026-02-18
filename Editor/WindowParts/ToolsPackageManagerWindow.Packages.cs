@@ -295,6 +295,324 @@ namespace com.tgs.packagemanager.editor
             return snapshot;
         }
 
+        private void SaveWindowStateToDisk()
+        {
+            if (IsBackgroundOnlyInstance() || !_useCachedStateOnOpen)
+            {
+                return;
+            }
+
+            var snapshot = CapturePackageListSnapshot();
+            if (snapshot == null)
+            {
+                return;
+            }
+
+            var persisted = BuildPersistedWindowState(snapshot);
+            if (persisted == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var filePath = GetWindowStateFilePath();
+                var directory = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var json = JsonUtility.ToJson(persisted);
+                File.WriteAllText(filePath, json);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("Package Manager cache: failed to save window state: " + ex.Message);
+            }
+        }
+
+        private bool TryRestoreWindowStateFromDisk()
+        {
+            if (IsBackgroundOnlyInstance() || !_useCachedStateOnOpen)
+            {
+                return false;
+            }
+
+            try
+            {
+                var filePath = GetWindowStateFilePath();
+                if (!File.Exists(filePath))
+                {
+                    return false;
+                }
+
+                var json = File.ReadAllText(filePath);
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    return false;
+                }
+
+                var persisted = JsonUtility.FromJson<PersistedWindowState>(json);
+                var snapshot = BuildSnapshotFromPersistedWindowState(persisted);
+                if (snapshot == null)
+                {
+                    return false;
+                }
+
+                RestorePackageListSnapshot(snapshot);
+                _packageListSnapshot = null;
+                _usePackageListSnapshot = false;
+                _statusMessage = "Loaded cached package state.";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("Package Manager cache: failed to restore window state: " + ex.Message);
+                return false;
+            }
+        }
+
+        private static string GetWindowStateFilePath()
+        {
+            var projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
+            if (string.IsNullOrEmpty(projectRoot))
+            {
+                projectRoot = Path.GetFullPath(".");
+            }
+
+            return Path.Combine(projectRoot, "Library", "TGSPackageManager", WindowStateFileName);
+        }
+
+        private PersistedWindowState BuildPersistedWindowState(PackageListSnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                return null;
+            }
+
+            return new PersistedWindowState
+            {
+                Version = 1,
+                Packages = SerializePackages(snapshot.Packages),
+                PackageUnityRequirements = SerializeStringDictionary(snapshot.PackageUnityRequirements),
+                PackageCompatibility = SerializeBoolDictionary(snapshot.PackageCompatibility),
+                LocalPackagesCache = snapshot.LocalPackagesCache != null
+                    ? snapshot.LocalPackagesCache.ToArray()
+                    : new LocalPackageInfo[0],
+                InstalledVersionsCache = SerializeStringDictionary(snapshot.InstalledVersionsCache),
+                PendingPushCache = SerializeBoolDictionary(snapshot.PendingPushCache),
+                PendingCommitCache = SerializeBoolDictionary(snapshot.PendingCommitCache),
+                GitInitializedCache = SerializeBoolDictionary(snapshot.GitInitializedCache),
+                GitHeadCache = SerializeStringDictionary(snapshot.GitHeadCache),
+                GitHeadMessageCache = SerializeStringDictionary(snapshot.GitHeadMessageCache),
+                GitDetachedCache = SerializeBoolDictionary(snapshot.GitDetachedCache),
+                RemoteExistsCache = SerializeBoolDictionary(snapshot.RemoteExistsCache),
+                RemoteUrlCache = SerializeStringDictionary(snapshot.RemoteUrlCache),
+                PackageListSignature = snapshot.PackageListSignature,
+                SavedAtUtc = DateTime.UtcNow.ToString("O")
+            };
+        }
+
+        private PackageListSnapshot BuildSnapshotFromPersistedWindowState(PersistedWindowState persisted)
+        {
+            if (persisted == null)
+            {
+                return null;
+            }
+
+            var snapshot = new PackageListSnapshot
+            {
+                Packages = DeserializePackages(persisted.Packages),
+                PackageUnityRequirements = DeserializeStringDictionary(persisted.PackageUnityRequirements),
+                PackageCompatibility = DeserializeBoolDictionary(persisted.PackageCompatibility),
+                LocalPackagesCache = persisted.LocalPackagesCache != null
+                    ? new List<LocalPackageInfo>(persisted.LocalPackagesCache)
+                    : new List<LocalPackageInfo>(),
+                InstalledVersionsCache = DeserializeStringDictionary(persisted.InstalledVersionsCache),
+                PendingPushCache = DeserializeBoolDictionary(persisted.PendingPushCache),
+                PendingCommitCache = DeserializeBoolDictionary(persisted.PendingCommitCache),
+                GitInitializedCache = DeserializeBoolDictionary(persisted.GitInitializedCache),
+                GitHeadCache = DeserializeStringDictionary(persisted.GitHeadCache),
+                GitHeadMessageCache = DeserializeStringDictionary(persisted.GitHeadMessageCache),
+                GitDetachedCache = DeserializeBoolDictionary(persisted.GitDetachedCache),
+                RemoteExistsCache = DeserializeBoolDictionary(persisted.RemoteExistsCache),
+                RemoteUrlCache = DeserializeStringDictionary(persisted.RemoteUrlCache),
+                PackageListSignature = persisted.PackageListSignature
+            };
+
+            if (snapshot.Packages == null)
+            {
+                snapshot.Packages = new List<PackageEntry>();
+            }
+
+            if (string.IsNullOrEmpty(snapshot.PackageListSignature))
+            {
+                snapshot.PackageListSignature = ComputePackageListSignature(snapshot);
+            }
+
+            return snapshot;
+        }
+
+        private static PersistedPackageEntry[] SerializePackages(List<PackageEntry> packages)
+        {
+            if (packages == null || packages.Count == 0)
+            {
+                return new PersistedPackageEntry[0];
+            }
+
+            var result = new List<PersistedPackageEntry>(packages.Count);
+            foreach (var package in packages)
+            {
+                if (package == null)
+                {
+                    continue;
+                }
+
+                var versions = package.versions;
+                var versionValues = new string[versions != null ? versions.Length : 0];
+                for (var i = 0; i < versionValues.Length; i++)
+                {
+                    versionValues[i] = versions[i] != null ? versions[i].version : string.Empty;
+                }
+
+                result.Add(new PersistedPackageEntry
+                {
+                    id = package.id,
+                    displayName = package.displayName,
+                    description = package.description,
+                    dependencies = package.dependencies != null ? (string[])package.dependencies.Clone() : null,
+                    pathInRepo = package.pathInRepo,
+                    defaultRef = package.defaultRef,
+                    refLatest = package.refLatest,
+                    required = package.required,
+                    versions = versionValues,
+                    author = package.author,
+                    repositoryId = package.repositoryId,
+                    loadStatus = (int)package.loadStatus,
+                    loadError = package.loadError
+                });
+            }
+
+            return result.ToArray();
+        }
+
+        private static List<PackageEntry> DeserializePackages(PersistedPackageEntry[] persistedPackages)
+        {
+            var packages = new List<PackageEntry>();
+            if (persistedPackages == null || persistedPackages.Length == 0)
+            {
+                return packages;
+            }
+
+            foreach (var persisted in persistedPackages)
+            {
+                if (persisted == null)
+                {
+                    continue;
+                }
+
+                var versionEntries = new PackageVersion[persisted.versions != null ? persisted.versions.Length : 0];
+                for (var i = 0; i < versionEntries.Length; i++)
+                {
+                    versionEntries[i] = new PackageVersion { version = persisted.versions[i] };
+                }
+
+                packages.Add(new PackageEntry
+                {
+                    id = persisted.id,
+                    displayName = persisted.displayName,
+                    description = persisted.description,
+                    dependencies = persisted.dependencies != null ? (string[])persisted.dependencies.Clone() : null,
+                    pathInRepo = persisted.pathInRepo,
+                    defaultRef = persisted.defaultRef,
+                    refLatest = persisted.refLatest,
+                    required = persisted.required,
+                    versions = versionEntries,
+                    author = persisted.author,
+                    repositoryId = persisted.repositoryId,
+                    loadStatus = (PackageLoadStatus)Mathf.Clamp(persisted.loadStatus, 0, (int)PackageLoadStatus.ConfigError),
+                    loadError = persisted.loadError
+                });
+            }
+
+            return packages;
+        }
+
+        private static KeyValueString[] SerializeStringDictionary(Dictionary<string, string> source)
+        {
+            if (source == null || source.Count == 0)
+            {
+                return new KeyValueString[0];
+            }
+
+            var result = new List<KeyValueString>(source.Count);
+            foreach (var entry in source)
+            {
+                result.Add(new KeyValueString { Key = entry.Key, Value = entry.Value });
+            }
+
+            return result.ToArray();
+        }
+
+        private static KeyValueBool[] SerializeBoolDictionary(Dictionary<string, bool> source)
+        {
+            if (source == null || source.Count == 0)
+            {
+                return new KeyValueBool[0];
+            }
+
+            var result = new List<KeyValueBool>(source.Count);
+            foreach (var entry in source)
+            {
+                result.Add(new KeyValueBool { Key = entry.Key, Value = entry.Value });
+            }
+
+            return result.ToArray();
+        }
+
+        private static Dictionary<string, string> DeserializeStringDictionary(KeyValueString[] source)
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (source == null)
+            {
+                return result;
+            }
+
+            foreach (var entry in source)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.Key))
+                {
+                    continue;
+                }
+
+                result[entry.Key] = entry.Value;
+            }
+
+            return result;
+        }
+
+        private static Dictionary<string, bool> DeserializeBoolDictionary(KeyValueBool[] source)
+        {
+            var result = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            if (source == null)
+            {
+                return result;
+            }
+
+            foreach (var entry in source)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.Key))
+                {
+                    continue;
+                }
+
+                result[entry.Key] = entry.Value;
+            }
+
+            return result;
+        }
+
         private void RestorePackageListSnapshot(PackageListSnapshot snapshot)
         {
             if (snapshot == null)

@@ -96,6 +96,13 @@ namespace com.tgs.packagemanager.editor
             EditorGUILayout.LabelField("Auto Update", EditorStyles.boldLabel);
 
             EditorGUI.BeginChangeCheck();
+            var useCachedStateOnOpen = EditorGUILayout.Toggle("Use Cached State on Open", _useCachedStateOnOpen);
+            if (EditorGUI.EndChangeCheck())
+            {
+                SetUseCachedStateOnOpen(useCachedStateOnOpen);
+            }
+
+            EditorGUI.BeginChangeCheck();
             var runInBackground = EditorGUILayout.Toggle("Run in Background", _runInBackground);
             if (EditorGUI.EndChangeCheck())
             {
