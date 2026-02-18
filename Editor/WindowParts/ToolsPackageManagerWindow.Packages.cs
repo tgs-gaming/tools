@@ -84,6 +84,43 @@ namespace com.tgs.packagemanager.editor
             }
         }
 
+        private IEnumerator InstallLatestForSelectedPackages(List<PackageEntry> packages)
+        {
+            if (packages == null || packages.Count == 0)
+            {
+                yield break;
+            }
+
+            foreach (var package in packages)
+            {
+                if (package == null || string.IsNullOrEmpty(package.id))
+                {
+                    continue;
+                }
+
+                var upmInfo = GetUpmPackageInfo(package);
+                if (upmInfo != null)
+                {
+                    continue;
+                }
+
+                var installedVersion = GetInstalledVersionCached(package);
+                if (!string.IsNullOrEmpty(installedVersion))
+                {
+                    continue;
+                }
+
+                if (package.loadStatus != PackageLoadStatus.Loaded || !IsPackageCompatible(package))
+                {
+                    continue;
+                }
+
+                var reference = ResolveLatestRef(package);
+                var targetVersion = GetLatestVersion(package);
+                yield return InstallPackage(package, reference, "Installation", targetVersion);
+            }
+        }
+
         private List<PackageListItem> BuildPackageListItems(List<PackageEntry> packages)
         {
             return BuildPackageListItems(packages, _localPackagesCache, _installedVersionsCache, _packageUnityRequirements,

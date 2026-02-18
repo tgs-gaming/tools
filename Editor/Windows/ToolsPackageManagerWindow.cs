@@ -79,6 +79,7 @@ namespace com.tgs.packagemanager.editor
         private readonly List<LocalPackageInfo> _localPackagesCache = new List<LocalPackageInfo>();
         private readonly Dictionary<string, bool> _dependencyFoldouts = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _repositoryAccessErrors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, bool> _availableInstallSelections = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private bool _manualPackageRefresh;
         private bool _usePackageListSnapshot;
         private bool _lastPackageRefreshSucceeded;
@@ -200,19 +201,6 @@ namespace com.tgs.packagemanager.editor
             }
 
             EditorApplication.delayCall += RequestBackgroundSynchronize;
-        }
-
-        [DidReloadScripts]
-        private static void OnScriptsReloaded()
-        {
-            RequestBackgroundDuplicateCleanup();
-
-            if (!IsBackgroundExecutionAllowedByPrefs())
-            {
-                return;
-            }
-
-            RequestBackgroundSynchronize();
         }
 
         private static void RequestBackgroundDuplicateCleanup()

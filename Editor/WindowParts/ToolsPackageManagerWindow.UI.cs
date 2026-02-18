@@ -44,15 +44,28 @@ namespace com.tgs.packagemanager.editor
 
             var previousColor = GUI.color;
             var overlayRect = new Rect(0f, 0f, position.width, position.height);
-            var overlayStyle = new GUIStyle(EditorStyles.boldLabel)
+            EditorGUI.DrawRect(overlayRect, new Color(0f, 0f, 0f, 0.42f));
+
+            var panelWidth = Mathf.Min(520f, Mathf.Max(260f, position.width - 40f));
+            var panelHeight = 86f;
+            var panelRect = new Rect((position.width - panelWidth) * 0.5f, (position.height - panelHeight) * 0.5f, panelWidth, panelHeight);
+            EditorGUI.DrawRect(panelRect, new Color(0.08f, 0.09f, 0.11f, 0.88f));
+            EditorGUI.DrawRect(new Rect(panelRect.x, panelRect.y, panelRect.width, 2f), new Color(0.95f, 0.35f, 0.18f, 1f));
+
+            var shadowStyle = new GUIStyle(EditorStyles.boldLabel)
             {
                 alignment = TextAnchor.MiddleCenter,
-                fontSize = 26,
+                fontSize = 30,
                 wordWrap = false
             };
+            shadowStyle.normal.textColor = new Color(0f, 0f, 0f, 0.8f);
 
-            GUI.color = new Color(1f, 1f, 1f, 0.18f);
-            GUI.Label(overlayRect, "REFRESH IN PROGRESS", overlayStyle);
+            var overlayStyle = new GUIStyle(shadowStyle);
+            overlayStyle.normal.textColor = new Color(1f, 0.96f, 0.9f, 1f);
+
+            var textRect = new Rect(panelRect.x, panelRect.y + 6f, panelRect.width, panelRect.height - 8f);
+            GUI.Label(new Rect(textRect.x + 2f, textRect.y + 2f, textRect.width, textRect.height), "REFRESH IN PROGRESS", shadowStyle);
+            GUI.Label(textRect, "REFRESH IN PROGRESS", overlayStyle);
             GUI.color = previousColor;
         }
 
@@ -269,6 +282,11 @@ namespace com.tgs.packagemanager.editor
                 return;
             }
 
+            if (showAvailable)
+            {
+                DrawAvailableBulkInstallActions(filteredItems, snapshot);
+            }
+
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             foreach (var item in filteredItems)
             {
@@ -323,6 +341,11 @@ namespace com.tgs.packagemanager.editor
 
                     using (new EditorGUILayout.HorizontalScope())
                     {
+                        if (showAvailable)
+                        {
+                            DrawAvailableSelectionToggle(item, snapshot);
+                        }
+
                         var titleStyle = new GUIStyle(EditorStyles.boldLabel)
                         {
                             fontSize = EditorStyles.boldLabel.fontSize + 2
@@ -612,6 +635,159 @@ namespace com.tgs.packagemanager.editor
                 PackageListTabs[2] + " [" + availableCount + "]",
                 PackageListTabs[3] + " [" + localCount + "]"
             };
+        }
+
+        private void DrawAvailableBulkInstallActions(List<PackageListItem> filteredItems, PackageListSnapshot snapshot)
+        {
+            var selectableIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var selectablePackages = new Dictionary<string, PackageEntry>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var item in filteredItems)
+            {
+                if (!CanSelectAvailablePackage(item, snapshot))
+                {
+                    continue;
+                }
+
+                var package = item.Package;
+                if (package == null || string.IsNullOrEmpty(package.id))
+                {
+                    continue;
+                }
+
+                selectableIds.Add(package.id);
+                selectablePackages[package.id] = package;
+            }
+
+            CleanupAvailableSelections(selectableIds);
+
+            var selectedCount = 0;
+            foreach (var id in selectableIds)
+            {
+                if (_availableInstallSelections.TryGetValue(id, out var isSelected) && isSelected)
+                {
+                    selectedCount++;
+                }
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField("Bulk Install", EditorStyles.miniBoldLabel, GUILayout.Width(80f));
+
+                EditorGUI.BeginDisabledGroup(_isBusy || selectableIds.Count == 0);
+                if (GUILayout.Button("Select All", GUILayout.Width(90f)))
+                {
+                    foreach (var id in selectableIds)
+                    {
+                        _availableInstallSelections[id] = true;
+                    }
+                }
+
+                if (GUILayout.Button("Clear", GUILayout.Width(70f)))
+                {
+                    foreach (var id in selectableIds)
+                    {
+                        _availableInstallSelections.Remove(id);
+                    }
+                    selectedCount = 0;
+                }
+                EditorGUI.EndDisabledGroup();
+
+                EditorGUI.BeginDisabledGroup(_isBusy || selectedCount == 0);
+                if (GUILayout.Button("Install Latest Selected (" + selectedCount + ")", GUILayout.Width(220f)))
+                {
+                    var selectedPackages = new List<PackageEntry>();
+                    foreach (var entry in selectablePackages)
+                    {
+                        if (_availableInstallSelections.TryGetValue(entry.Key, out var isSelected) && isSelected)
+                        {
+                            selectedPackages.Add(entry.Value);
+                            _availableInstallSelections.Remove(entry.Key);
+                        }
+                    }
+
+                    if (selectedPackages.Count > 0)
+                    {
+                        StartOperation(InstallLatestForSelectedPackages(selectedPackages));
+                    }
+                }
+                EditorGUI.EndDisabledGroup();
+
+                GUILayout.FlexibleSpace();
+            }
+        }
+
+        private void DrawAvailableSelectionToggle(PackageListItem item, PackageListSnapshot snapshot)
+        {
+            if (!CanSelectAvailablePackage(item, snapshot))
+            {
+                EditorGUI.BeginDisabledGroup(true);
+                GUILayout.Toggle(false, GUIContent.none, GUILayout.Width(18f));
+                EditorGUI.EndDisabledGroup();
+                return;
+            }
+
+            var packageId = item.Package.id;
+            var selected = _availableInstallSelections.TryGetValue(packageId, out var current) && current;
+            var updated = GUILayout.Toggle(selected, GUIContent.none, GUILayout.Width(18f));
+            if (updated)
+            {
+                _availableInstallSelections[packageId] = true;
+            }
+            else
+            {
+                _availableInstallSelections.Remove(packageId);
+            }
+        }
+
+        private bool CanSelectAvailablePackage(PackageListItem item, PackageListSnapshot snapshot)
+        {
+            if (item == null || item.Package == null)
+            {
+                return false;
+            }
+
+            if (item.IsLocalOnly || item.IsInstalled || item.IsUpmInstalled || item.Package.required)
+            {
+                return false;
+            }
+
+            if (item.Package.loadStatus != PackageLoadStatus.Loaded)
+            {
+                return false;
+            }
+
+            return snapshot != null
+                ? IsPackageCompatible(item.Package, snapshot.PackageCompatibility)
+                : IsPackageCompatible(item.Package);
+        }
+
+        private void CleanupAvailableSelections(HashSet<string> selectableIds)
+        {
+            if (selectableIds == null)
+            {
+                selectableIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            var keysToRemove = new List<string>();
+            foreach (var entry in _availableInstallSelections)
+            {
+                if (!entry.Value)
+                {
+                    keysToRemove.Add(entry.Key);
+                    continue;
+                }
+
+                if (!selectableIds.Contains(entry.Key))
+                {
+                    keysToRemove.Add(entry.Key);
+                }
+            }
+
+            foreach (var key in keysToRemove)
+            {
+                _availableInstallSelections.Remove(key);
+            }
         }
 
         private void DrawDependenciesFoldout(PackageEntry package, bool isUpmInstalled, bool isInstalled)
