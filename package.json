@@ -1,6 +1,6 @@
 {
   "name": "com.tgs.package-manager",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "displayName": "TGS Package Manager",
   "description": "Unity Editor tool to install TGS packages from a manifest and GitHub Contents API.",
   "unity": "2020.3",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1 - 2026-02-18
+- Added Bulk Operations
+
+
 ## 2.0.0 - 2026-02-18
 - Performance Optimizations
 
