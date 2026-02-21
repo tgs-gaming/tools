@@ -35,10 +35,19 @@ namespace com.tgs.packagemanager.editor
         private const double RefreshUnlockDelaySeconds = 2.0;
         private const string DefaultRepositoriesPathRelative = "../../repositories.json";
         private const string DefaultLocalRepositoriesPathRelative = "../../local-repositories.json";
-        private const string DefaultEmbeddedPackagesPathRelative = "Assets/TGSPackageManager/embedded_packages";
         private const string DefaultPackagePrefix = "com.tgs";
+        private const string PackageManagerId = "com.tgs.package-manager";
         private const string PublicRepoWarningMessage = "This repository is PUBLIC. Be careful not to publish company code to public repositories.";
         private static ToolsPackageManagerWindow _backgroundInstance;
+        private static string _cachedPackageRootPath;
+
+        private static string DefaultEmbeddedPackagesPathRelative
+        {
+            get
+            {
+                return GetDefaultEmbeddedPackagesPathRelative();
+            }
+        }
 
         private string _defaultInstallRoot;
         private string _repositoriesPathRelative;
@@ -127,7 +136,14 @@ namespace com.tgs.packagemanager.editor
             }
             _repositoriesPathRelative = EditorPrefs.GetString(PrefsRepositoriesPath, DefaultRepositoriesPathRelative);
             _localRepositoriesPathRelative = EditorPrefs.GetString(PrefsLocalRepositoriesPath, DefaultLocalRepositoriesPathRelative);
-            _embeddedPackagesPathRelative = EditorPrefs.GetString(PrefsEmbeddedPackagesPath, DefaultEmbeddedPackagesPathRelative);
+            var defaultEmbeddedPackagesPath = DefaultEmbeddedPackagesPathRelative;
+            var storedEmbeddedPackagesPath = EditorPrefs.GetString(PrefsEmbeddedPackagesPath, defaultEmbeddedPackagesPath);
+            var normalizedEmbeddedPackagesPath = NormalizeEmbeddedPackagesPath(storedEmbeddedPackagesPath, defaultEmbeddedPackagesPath);
+            _embeddedPackagesPathRelative = normalizedEmbeddedPackagesPath;
+            if (!string.Equals(storedEmbeddedPackagesPath, normalizedEmbeddedPackagesPath, StringComparison.Ordinal))
+            {
+                EditorPrefs.SetString(PrefsEmbeddedPackagesPath, normalizedEmbeddedPackagesPath);
+            }
             _runInBackground = IsRunInBackgroundChecked();
             _useCachedStateOnOpen = EditorPrefs.GetBool(PrefsUseCachedStateOnOpen, true);
             _selectedTab = EditorPrefs.GetInt(PrefsSelectedTab, 0);
@@ -1432,21 +1448,88 @@ namespace com.tgs.packagemanager.editor
 
         private static string GetPackageRootPath()
         {
-            var scriptPath = Path.GetFullPath(new System.Diagnostics.StackTrace(true).GetFrame(0)?.GetFileName() ?? string.Empty);
-            var startDir = !string.IsNullOrEmpty(scriptPath) ? Path.GetDirectoryName(scriptPath) : null;
-            var current = string.IsNullOrEmpty(startDir) ? null : new DirectoryInfo(startDir);
-            while (current != null)
+            if (!string.IsNullOrEmpty(_cachedPackageRootPath) && Directory.Exists(_cachedPackageRootPath))
             {
-                var packageJsonPath = Path.Combine(current.FullName, "package.json");
-                if (File.Exists(packageJsonPath))
-                {
-                    return current.FullName;
-                }
-
-                current = current.Parent;
+                return _cachedPackageRootPath;
             }
 
-            return Path.GetFullPath(Path.Combine(Application.dataPath, "TGSPackageManager", "packages", "com.tgs.package-manager"));
+            var packageInfo = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(ToolsPackageManagerWindow).Assembly);
+            if (packageInfo != null && !string.IsNullOrEmpty(packageInfo.resolvedPath) && Directory.Exists(packageInfo.resolvedPath))
+            {
+                _cachedPackageRootPath = Path.GetFullPath(packageInfo.resolvedPath);
+                return _cachedPackageRootPath;
+            }
+
+            var assetsPath = Application.dataPath;
+            if (!string.IsNullOrEmpty(assetsPath) && Directory.Exists(assetsPath))
+            {
+                var packageRoot = FindPackageRootById(assetsPath, PackageManagerId);
+                if (!string.IsNullOrEmpty(packageRoot))
+                {
+                    _cachedPackageRootPath = packageRoot;
+                    return _cachedPackageRootPath;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static string FindPackageRootById(string searchRoot, string packageId)
+        {
+            if (string.IsNullOrEmpty(searchRoot)
+                || string.IsNullOrEmpty(packageId)
+                || !Directory.Exists(searchRoot))
+            {
+                return string.Empty;
+            }
+
+            string[] packageJsonPaths;
+            try
+            {
+                packageJsonPaths = Directory.GetFiles(searchRoot, "package.json", SearchOption.AllDirectories);
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+
+            foreach (var packageJsonPath in packageJsonPaths)
+            {
+                if (string.IsNullOrEmpty(packageJsonPath) || !File.Exists(packageJsonPath))
+                {
+                    continue;
+                }
+
+                string content;
+                try
+                {
+                    content = File.ReadAllText(packageJsonPath);
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(content))
+                {
+                    continue;
+                }
+
+                var packageInfo = JsonUtility.FromJson<PackageJsonInfo>(content);
+                if (packageInfo == null
+                    || !string.Equals(packageInfo.name, packageId, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var directory = Path.GetDirectoryName(packageJsonPath);
+                if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+                {
+                    return Path.GetFullPath(directory);
+                }
+            }
+
+            return string.Empty;
         }
 
         private static string BuildRootNamespace(string packageId, bool isEditor)
@@ -1943,8 +2026,71 @@ namespace com.tgs.packagemanager.editor
 
         private static string GetDefaultInstallRoot()
         {
-            var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-            return Path.Combine(projectRoot, "Assets", "TGSPackageManager", "packages");
+            var packageRoot = GetPackageRootPath();
+            if (!string.IsNullOrEmpty(packageRoot))
+            {
+                var embeddedPackagesRoot = Directory.GetParent(packageRoot)?.FullName;
+                if (!string.IsNullOrEmpty(embeddedPackagesRoot))
+                {
+                    var packageManagerRoot = Directory.GetParent(embeddedPackagesRoot)?.FullName;
+                    if (!string.IsNullOrEmpty(packageManagerRoot))
+                    {
+                        return Path.Combine(packageManagerRoot, "packages");
+                    }
+                }
+            }
+
+            var projectRoot = GetProjectRootPath();
+            if (string.IsNullOrEmpty(projectRoot))
+            {
+                return string.Empty;
+            }
+
+            return Path.Combine(projectRoot, "Assets", "packages");
+        }
+
+        private static string GetDefaultEmbeddedPackagesPathRelative()
+        {
+            var packageRoot = GetPackageRootPath();
+            if (string.IsNullOrEmpty(packageRoot))
+            {
+                return string.Empty;
+            }
+
+            var embeddedPackagesRoot = Directory.GetParent(packageRoot)?.FullName;
+            if (string.IsNullOrEmpty(embeddedPackagesRoot))
+            {
+                return string.Empty;
+            }
+
+            return ToRelativeInstallRoot(embeddedPackagesRoot);
+        }
+
+        private static string NormalizeEmbeddedPackagesPath(string pathValue, string defaultPathValue)
+        {
+            var fallbackPath = ToRelativeInstallRoot(defaultPathValue);
+            if (string.IsNullOrWhiteSpace(pathValue))
+            {
+                return fallbackPath;
+            }
+
+            var normalizedPath = ToRelativeInstallRoot(pathValue);
+            if (string.IsNullOrWhiteSpace(normalizedPath))
+            {
+                return fallbackPath;
+            }
+
+            var normalizedAbsolutePath = ResolveInstallRoot(normalizedPath);
+            if (!Directory.Exists(normalizedAbsolutePath) && !string.IsNullOrWhiteSpace(fallbackPath))
+            {
+                var fallbackAbsolutePath = ResolveInstallRoot(fallbackPath);
+                if (Directory.Exists(fallbackAbsolutePath))
+                {
+                    return fallbackPath;
+                }
+            }
+
+            return normalizedPath;
         }
 
         internal static string GetDefaultUnityVersion()
