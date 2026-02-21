@@ -208,21 +208,24 @@ namespace com.tgs.packagemanager.editor
             _refreshAfterCompilePending = true;
             TryRunPendingRefresh();
         }
-
+        
         [InitializeOnLoadMethod]
         private static void OnEditorLaunched()
         {
+            const string SessionKey = "EditorStartup_Initialized";
+            
+            if (SessionState.GetBool(SessionKey, false))
+                return;
+            
+            SessionState.SetBool(SessionKey, true);
+            
             if (EditorApplication.isPlayingOrWillChangePlaymode)
-            {
                 return;
-            }
-
+            
             EditorApplication.delayCall += RequestBackgroundDuplicateCleanup;
-
+            
             if (!IsBackgroundExecutionAllowedByPrefs())
-            {
                 return;
-            }
 
             EditorApplication.delayCall += RequestBackgroundSynchronize;
         }
@@ -410,7 +413,7 @@ namespace com.tgs.packagemanager.editor
 
         private static bool IsBackgroundExecutionAllowedByPrefs()
         {
-            return !IsRunInBackgroundChecked();
+            return IsRunInBackgroundChecked();
         }
 
         private bool IsBackgroundOnlyInstance()
