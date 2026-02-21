@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.0 - 2026-02-21
+- Added custom root support (copy to anywhere)
+
+
 ## 2.0.2 - 2026-02-18
 - Startup Optimizations
 
