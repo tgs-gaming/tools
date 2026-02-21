@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.2 - 2026-02-21
+- Reload domain once per session
+
+
 ## 2.1.1 - 2026-02-21
 - Custom root fixes
 
