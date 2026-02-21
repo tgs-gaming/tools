@@ -40,6 +40,7 @@ namespace com.tgs.packagemanager.editor
         private const string PublicRepoWarningMessage = "This repository is PUBLIC. Be careful not to publish company code to public repositories.";
         private static ToolsPackageManagerWindow _backgroundInstance;
         private static string _cachedPackageRootPath;
+        private static bool _rootResolutionLogged;
 
         private static string DefaultEmbeddedPackagesPathRelative
         {
@@ -126,9 +127,10 @@ namespace com.tgs.packagemanager.editor
             CompilationPipeline.compilationFinished += OnCompilationFinished;
 
             var storedInstallRoot = EditorPrefs.GetString(PrefsInstallRoot, string.Empty);
+            var defaultInstallRoot = ToRelativeInstallRoot(GetDefaultInstallRoot());
             var normalizedInstallRoot = string.IsNullOrWhiteSpace(storedInstallRoot)
-                ? ToRelativeInstallRoot(GetDefaultInstallRoot())
-                : ToRelativeInstallRoot(storedInstallRoot);
+                ? defaultInstallRoot
+                : NormalizeInstallRootPath(storedInstallRoot, defaultInstallRoot);
             _defaultInstallRoot = normalizedInstallRoot;
             if (!string.Equals(storedInstallRoot, normalizedInstallRoot, StringComparison.Ordinal))
             {
@@ -1450,6 +1452,7 @@ namespace com.tgs.packagemanager.editor
         {
             if (!string.IsNullOrEmpty(_cachedPackageRootPath) && Directory.Exists(_cachedPackageRootPath))
             {
+                LogRootResolution("cache", _cachedPackageRootPath);
                 return _cachedPackageRootPath;
             }
 
@@ -1457,6 +1460,15 @@ namespace com.tgs.packagemanager.editor
             if (packageInfo != null && !string.IsNullOrEmpty(packageInfo.resolvedPath) && Directory.Exists(packageInfo.resolvedPath))
             {
                 _cachedPackageRootPath = Path.GetFullPath(packageInfo.resolvedPath);
+                LogRootResolution("PackageInfo.FindForAssembly", _cachedPackageRootPath);
+                return _cachedPackageRootPath;
+            }
+
+            var fromScriptAsset = FindPackageRootFromScriptAsset(PackageManagerId);
+            if (!string.IsNullOrEmpty(fromScriptAsset))
+            {
+                _cachedPackageRootPath = fromScriptAsset;
+                LogRootResolution("AssetDatabase.FindAssets", _cachedPackageRootPath);
                 return _cachedPackageRootPath;
             }
 
@@ -1467,11 +1479,24 @@ namespace com.tgs.packagemanager.editor
                 if (!string.IsNullOrEmpty(packageRoot))
                 {
                     _cachedPackageRootPath = packageRoot;
+                    LogRootResolution("package.json scan", _cachedPackageRootPath);
                     return _cachedPackageRootPath;
                 }
             }
 
+            LogRootResolution("not found", string.Empty);
             return string.Empty;
+        }
+
+        private static void LogRootResolution(string source, string resolvedPath)
+        {
+            if (_rootResolutionLogged)
+            {
+                return;
+            }
+
+            _rootResolutionLogged = true;
+            var pathText = string.IsNullOrEmpty(resolvedPath) ? "<empty>" : resolvedPath;
         }
 
         private static string FindPackageRootById(string searchRoot, string packageId)
@@ -1483,53 +1508,139 @@ namespace com.tgs.packagemanager.editor
                 return string.Empty;
             }
 
-            string[] packageJsonPaths;
-            try
+            var pendingDirectories = new Stack<string>();
+            pendingDirectories.Push(searchRoot);
+            while (pendingDirectories.Count > 0)
             {
-                packageJsonPaths = Directory.GetFiles(searchRoot, "package.json", SearchOption.AllDirectories);
-            }
-            catch (Exception)
-            {
-                return string.Empty;
-            }
-
-            foreach (var packageJsonPath in packageJsonPaths)
-            {
-                if (string.IsNullOrEmpty(packageJsonPath) || !File.Exists(packageJsonPath))
+                var currentDirectory = pendingDirectories.Pop();
+                if (string.IsNullOrEmpty(currentDirectory) || !Directory.Exists(currentDirectory))
                 {
                     continue;
                 }
 
-                string content;
+                string[] packageJsonPaths;
                 try
                 {
-                    content = File.ReadAllText(packageJsonPath);
+                    packageJsonPaths = Directory.GetFiles(currentDirectory, "package.json", SearchOption.TopDirectoryOnly);
                 }
                 catch (Exception)
                 {
                     continue;
                 }
 
-                if (string.IsNullOrEmpty(content))
+                foreach (var packageJsonPath in packageJsonPaths)
+                {
+                    if (IsPackageManifest(packageJsonPath, packageId))
+                    {
+                        var directory = Path.GetDirectoryName(packageJsonPath);
+                        if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+                        {
+                            return Path.GetFullPath(directory);
+                        }
+                    }
+                }
+
+                string[] childDirectories;
+                try
+                {
+                    childDirectories = Directory.GetDirectories(currentDirectory);
+                }
+                catch (Exception)
                 {
                     continue;
                 }
 
-                var packageInfo = JsonUtility.FromJson<PackageJsonInfo>(content);
-                if (packageInfo == null
-                    || !string.Equals(packageInfo.name, packageId, StringComparison.OrdinalIgnoreCase))
+                foreach (var childDirectory in childDirectories)
                 {
-                    continue;
-                }
-
-                var directory = Path.GetDirectoryName(packageJsonPath);
-                if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
-                {
-                    return Path.GetFullPath(directory);
+                    pendingDirectories.Push(childDirectory);
                 }
             }
 
             return string.Empty;
+        }
+
+        private static string FindPackageRootFromScriptAsset(string packageId)
+        {
+            if (string.IsNullOrEmpty(packageId))
+            {
+                return string.Empty;
+            }
+
+            var projectRoot = GetProjectRootPath();
+            if (string.IsNullOrEmpty(projectRoot))
+            {
+                return string.Empty;
+            }
+
+            string[] scriptGuids;
+            try
+            {
+                scriptGuids = AssetDatabase.FindAssets("ToolsPackageManagerWindow t:Script", new[] { "Assets" });
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+
+            foreach (var scriptGuid in scriptGuids)
+            {
+                if (string.IsNullOrEmpty(scriptGuid))
+                {
+                    continue;
+                }
+
+                var assetPath = AssetDatabase.GUIDToAssetPath(scriptGuid);
+                if (string.IsNullOrEmpty(assetPath)
+                    || !assetPath.EndsWith("ToolsPackageManagerWindow.cs", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var fullScriptPath = Path.GetFullPath(Path.Combine(projectRoot, assetPath));
+                var currentDirectory = Path.GetDirectoryName(fullScriptPath);
+                var current = string.IsNullOrEmpty(currentDirectory) ? null : new DirectoryInfo(currentDirectory);
+                while (current != null)
+                {
+                    var packageJsonPath = Path.Combine(current.FullName, "package.json");
+                    if (IsPackageManifest(packageJsonPath, packageId))
+                    {
+                        return Path.GetFullPath(current.FullName);
+                    }
+
+                    current = current.Parent;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static bool IsPackageManifest(string packageJsonPath, string packageId)
+        {
+            if (string.IsNullOrEmpty(packageJsonPath)
+                || string.IsNullOrEmpty(packageId)
+                || !File.Exists(packageJsonPath))
+            {
+                return false;
+            }
+
+            string content;
+            try
+            {
+                content = File.ReadAllText(packageJsonPath);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(content))
+            {
+                return false;
+            }
+
+            var packageInfo = JsonUtility.FromJson<PackageJsonInfo>(content);
+            return packageInfo != null
+                && string.Equals(packageInfo.name, packageId, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string BuildRootNamespace(string packageId, bool isEditor)
@@ -2091,6 +2202,61 @@ namespace com.tgs.packagemanager.editor
             }
 
             return normalizedPath;
+        }
+
+        private static string NormalizeInstallRootPath(string pathValue, string defaultPathValue)
+        {
+            var fallbackPath = ToRelativeInstallRoot(defaultPathValue);
+            if (string.IsNullOrWhiteSpace(pathValue))
+            {
+                return fallbackPath;
+            }
+
+            var normalizedPath = ToRelativeInstallRoot(pathValue);
+            if (string.IsNullOrWhiteSpace(normalizedPath))
+            {
+                return fallbackPath;
+            }
+
+            if (!IsLegacyDefaultInstallRootPath(normalizedPath))
+            {
+                return normalizedPath;
+            }
+
+            var normalizedAbsolutePath = ResolveInstallRoot(normalizedPath);
+            if (Directory.Exists(normalizedAbsolutePath))
+            {
+                return normalizedPath;
+            }
+
+            if (string.IsNullOrWhiteSpace(fallbackPath))
+            {
+                return normalizedPath;
+            }
+
+            var fallbackAbsolutePath = ResolveInstallRoot(fallbackPath);
+            if (Directory.Exists(fallbackAbsolutePath))
+            {
+                return fallbackPath;
+            }
+
+            return normalizedPath;
+        }
+
+        private static bool IsLegacyDefaultInstallRootPath(string pathValue)
+        {
+            if (string.IsNullOrWhiteSpace(pathValue))
+            {
+                return false;
+            }
+
+            var normalized = pathValue
+                .Trim()
+                .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+                .Replace('/', Path.DirectorySeparatorChar)
+                .Replace('\\', Path.DirectorySeparatorChar);
+            var legacy = Path.Combine("Assets", "TGSPackageManager", "packages");
+            return string.Equals(normalized, legacy, StringComparison.OrdinalIgnoreCase);
         }
 
         internal static string GetDefaultUnityVersion()

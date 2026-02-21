@@ -272,7 +272,7 @@ namespace com.tgs.packagemanager.editor
                 }
                 else
                 {
-                    var normalizedRoot = ToRelativeInstallRoot(repository.installRoot);
+                    var normalizedRoot = NormalizeInstallRootPath(repository.installRoot, fallbackInstallRoot);
                     if (!string.Equals(repository.installRoot, normalizedRoot, StringComparison.Ordinal))
                     {
                         repository.installRoot = normalizedRoot;

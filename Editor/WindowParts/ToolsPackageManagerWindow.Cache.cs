@@ -289,6 +289,14 @@ namespace com.tgs.packagemanager.editor
                 }
             }
 
+            var rootsSummary = installRoots.Count == 0
+                ? "<none>"
+                : string.Join(" | ", installRoots);
+
+            var scannedRoots = 0;
+            var scannedDirectories = 0;
+            var discoveredPackages = 0;
+
             foreach (var installRoot in installRoots)
             {
                 if (string.IsNullOrEmpty(installRoot) || !Directory.Exists(installRoot))
@@ -296,8 +304,11 @@ namespace com.tgs.packagemanager.editor
                     continue;
                 }
 
+                scannedRoots++;
+
                 foreach (var directory in Directory.GetDirectories(installRoot))
                 {
+                    scannedDirectories++;
                     var packageJsonPath = Path.Combine(directory, "package.json");
                     if (!File.Exists(packageJsonPath))
                     {
@@ -322,6 +333,8 @@ namespace com.tgs.packagemanager.editor
                     {
                         continue;
                     }
+
+                    discoveredPackages++;
 
                     var version = info != null ? info.version : string.Empty;
                     var repositoryUrl = info != null && info.repository != null ? info.repository.url : null;
