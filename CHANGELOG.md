@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.3 - 2026-02-23
+- Improved repository listing
+
+
 ## 2.1.2 - 2026-02-21
 - Reload domain once per session
 
