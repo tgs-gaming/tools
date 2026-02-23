@@ -663,22 +663,61 @@ namespace com.tgs.packagemanager.editor
                     continue;
                 }
 
-                var label = string.IsNullOrWhiteSpace(repository.url) ? "Repository" : repository.url;
-                var prefix = NormalizePackagePrefix(repository.packagePrefix);
-                if (!string.IsNullOrWhiteSpace(prefix))
-                {
-                    label += " (" + prefix + ")";
-                }
-
-                var dropdownLabel = BuildRepositoryShortLabel(repository.url);
-                dropdownList.Add(string.IsNullOrWhiteSpace(dropdownLabel) ? label : dropdownLabel);
+                var dropdownLabel = BuildRepositoryDropdownLabel(repository);
+                dropdownList.Add(dropdownLabel);
                 idList.Add(repository.id);
-                fullList.Add(label);
+                fullList.Add(dropdownLabel);
             }
 
             dropdownLabels = dropdownList.ToArray();
             ids = idList.ToArray();
             fullLabels = fullList.ToArray();
+        }
+
+        private static string BuildRepositoryDropdownLabel(RepositoryConfig repository)
+        {
+            var parts = new List<string>
+            {
+                repository != null && repository.isPublic ? "public" : "private"
+            };
+
+            var url = repository != null ? repository.url : string.Empty;
+            var normalizedUrl = NormalizeRemoteRepoUrl(url);
+            if (Uri.TryCreate(normalizedUrl, UriKind.Absolute, out var uri))
+            {
+                var host = uri.Host;
+                if (host.EndsWith(".com", StringComparison.OrdinalIgnoreCase))
+                {
+                    host = host.Substring(0, host.Length - 4);
+                }
+
+                if (!string.IsNullOrWhiteSpace(host))
+                {
+                    parts.Add(host);
+                }
+
+                var segments = uri.AbsolutePath.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+                for (var i = 0; i < segments.Length; i++)
+                {
+                    var segment = segments[i];
+                    if (i == segments.Length - 1 && segment.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+                    {
+                        segment = segment.Substring(0, segment.Length - 4);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(segment))
+                    {
+                        parts.Add(segment);
+                    }
+                }
+            }
+
+            if (parts.Count == 1)
+            {
+                parts.Add("repository");
+            }
+
+            return string.Join(" / ", parts.ToArray());
         }
 
         private RepositoryConfig FindRepositoryConfig(string owner, string repo)
