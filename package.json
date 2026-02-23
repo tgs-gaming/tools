@@ -1,0 +1,16 @@
+{
+  "name": "com.tgs.spine-handler",
+  "version": "1.6.0",
+  "displayName": "Spine Handler",
+  "description": "Spine helper methods",
+  "unity": "2020.3",
+  "required": false,
+  "dependencies": [],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tgs-gaming/tools"
+  },
+  "author": {
+    "name": "Sthuarty Gonzaga"
+  }
+}
