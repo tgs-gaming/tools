@@ -121,9 +121,12 @@ namespace com.tgs.assetdependencymanager.editor
 			{
 				_originalAssets = value;
 				_assetGameDependencies = null;
+				_assetTGSPackageDependencies = null;
 				_assetSystemDependencies = null;
-				_uniqueAssetGameDependencies = null;
-				_uniqueAssetGameDependenciesReplace = null;
+				_assetReplaceDependencies = null;
+				_uniqueAssetReplaceDependencies = null;
+				_uniqueAssetReplaceDependenciesReplace = null;
+				_uniqueAssetReplaceDependenciesRemove = null;
 			}
 		}
 
@@ -138,10 +141,12 @@ namespace com.tgs.assetdependencymanager.editor
 
 		public static DefaultAsset NewAssetPath;
 		public static bool GameDependenciesFoldout;
+		public static bool TGSPackageDependenciesFoldout;
 		public static bool SystemDependenciesFoldout;
 		public static bool NewGameDependenciesFoldout;
 
 		private static List<string> _assetGameDependencies;
+		private static List<string> _assetTGSPackageDependencies;
 
 		public static List<string> AssetGameDependencies
 		{
@@ -166,29 +171,68 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 		}
 
-		private static Object[] _uniqueAssetGameDependenciesReplace;
-		private static bool[] _uniqueAssetGameDependenciesRemove;
-
-		private static List<string> _uniqueAssetGameDependencies;
-
-		public static List<string> UniqueAssetGameDependencies
+		public static List<string> AssetTGSPackageDependencies
 		{
 			get
 			{
-				if (AssetGameDependencies == null)
+				if (OriginalAssets == null || OriginalAssets.Count == 0)
+					return new List<string>();
+				if (_assetTGSPackageDependencies == null)
 				{
-					_uniqueAssetGameDependencies = null;
-					_uniqueAssetGameDependenciesReplace = null;
-					_uniqueAssetGameDependenciesRemove = null;
-				}
-				else if (_uniqueAssetGameDependencies == null)
-				{
-					_uniqueAssetGameDependencies = AssetGameDependencies.Distinct().ToList();
-					_uniqueAssetGameDependenciesReplace = new Object[AssetGameDependencies.Count];
-					_uniqueAssetGameDependenciesRemove = new bool[AssetGameDependencies.Count];
+					var paths = ResolveSelectedAssetPaths(OriginalAssets).ToArray();
+					_assetTGSPackageDependencies = GetTGSPackageDependencies(paths).Distinct().ToList();
+
+					foreach (var path in paths)
+					{
+						if (_assetTGSPackageDependencies != null)
+							_assetTGSPackageDependencies = _assetTGSPackageDependencies.Where(dep => dep != path).ToList();
+					}
 				}
 
-				return _uniqueAssetGameDependencies;
+				return _assetTGSPackageDependencies;
+			}
+		}
+
+		private static Object[] _uniqueAssetReplaceDependenciesReplace;
+		private static bool[] _uniqueAssetReplaceDependenciesRemove;
+
+		private static List<string> _assetReplaceDependencies;
+		private static List<string> _uniqueAssetReplaceDependencies;
+
+		public static List<string> AssetReplaceDependencies
+		{
+			get
+			{
+				if (_assetReplaceDependencies == null)
+				{
+					_assetReplaceDependencies = AssetGameDependencies
+						.Concat(AssetTGSPackageDependencies)
+						.Distinct(StringComparer.OrdinalIgnoreCase)
+						.ToList();
+				}
+
+				return _assetReplaceDependencies;
+			}
+		}
+
+		public static List<string> UniqueAssetReplaceDependencies
+		{
+			get
+			{
+				if (AssetReplaceDependencies == null)
+				{
+					_uniqueAssetReplaceDependencies = null;
+					_uniqueAssetReplaceDependenciesReplace = null;
+					_uniqueAssetReplaceDependenciesRemove = null;
+				}
+				else if (_uniqueAssetReplaceDependencies == null)
+				{
+					_uniqueAssetReplaceDependencies = AssetReplaceDependencies.Distinct().ToList();
+					_uniqueAssetReplaceDependenciesReplace = new Object[_uniqueAssetReplaceDependencies.Count];
+					_uniqueAssetReplaceDependenciesRemove = new bool[_uniqueAssetReplaceDependencies.Count];
+				}
+
+				return _uniqueAssetReplaceDependencies;
 			}
 		}
 
@@ -416,6 +460,24 @@ namespace com.tgs.assetdependencymanager.editor
 				EditorGUILayout.LabelField(gameLabel, _itemDescriptionStyle);
 			}
 
+			var tgsPackageCount = AssetTGSPackageDependencies?.Count ?? 0;
+			var tgsPackageLabel = $"TGS Package Dependencies ({tgsPackageCount})";
+			if (tgsPackageCount > 0)
+			{
+				TGSPackageDependenciesFoldout = EditorGUILayout.Foldout(TGSPackageDependenciesFoldout, tgsPackageLabel);
+				if (TGSPackageDependenciesFoldout)
+				{
+					foreach (var dep in AssetTGSPackageDependencies)
+					{
+						GUILayout.Label("   * " + dep, _itemDescriptionStyle);
+					}
+				}
+			}
+			else
+			{
+				EditorGUILayout.LabelField(tgsPackageLabel, _itemDescriptionStyle);
+			}
+
 			var systemCount = AssetSystemDependencies?.Count ?? 0;
 			var systemLabel = $"System & Common & Script Dependencies ({systemCount})";
 			if (systemCount > 0)
@@ -556,7 +618,7 @@ namespace com.tgs.assetdependencymanager.editor
 			var originalAssetPaths = GetOriginalAssetPaths();
 			var directDependencyPaths = GetDirectDependencyPathsCached(originalAssetPaths);
 
-			if (AssetGameDependencies != null && AssetGameDependencies.Count > 0)
+			if (AssetReplaceDependencies != null && AssetReplaceDependencies.Count > 0)
 			{
 				GUILayout.Label("Replace References", _itemTitleStyle);
 
@@ -569,14 +631,13 @@ namespace com.tgs.assetdependencymanager.editor
 
 				GUILayout.FlexibleSpace();
 				EditorGUILayout.EndHorizontal();
-				int startOffset = "Packages/".Length;
 				string packageName = "";
 
-				for (int i = 0; i < UniqueAssetGameDependencies.Count; i++)
+				for (int i = 0; i < UniqueAssetReplaceDependencies.Count; i++)
 				{
-					string dependency = UniqueAssetGameDependencies[i];
+					string dependency = UniqueAssetReplaceDependencies[i];
 
-					var name = dependency.Substring(startOffset, dependency.IndexOf("/", startOffset) - startOffset);
+					var name = GetDependencyGroupLabel(dependency);
 					if (packageName != name)
 					{
 						packageName = name;
@@ -603,23 +664,23 @@ namespace com.tgs.assetdependencymanager.editor
 
 					if (directDependency)
 					{
-						_uniqueAssetGameDependenciesReplace[i] = EditorGUILayout.ObjectField(
-							_uniqueAssetGameDependenciesReplace[i], original.GetType(), false,
+						_uniqueAssetReplaceDependenciesReplace[i] = EditorGUILayout.ObjectField(
+							_uniqueAssetReplaceDependenciesReplace[i], original.GetType(), false,
 							GUILayout.Width(COLUMN_DEFAULT_SIZE));
 
-						_uniqueAssetGameDependenciesRemove[i] = EditorGUILayout.Toggle("",
-							_uniqueAssetGameDependenciesRemove[i], GUILayout.Width(80));
+						_uniqueAssetReplaceDependenciesRemove[i] = EditorGUILayout.Toggle("",
+							_uniqueAssetReplaceDependenciesRemove[i], GUILayout.Width(80));
 					}
 					else
 					{
 						GUILayout.Label("(Internal dependency)", _itemDescriptionStyle, GUILayout.Width(COLUMN_DEFAULT_SIZE));
 					}
 
-					if (_uniqueAssetGameDependenciesRemove[i])
-						_uniqueAssetGameDependenciesReplace[i] = null;
+					if (_uniqueAssetReplaceDependenciesRemove[i])
+						_uniqueAssetReplaceDependenciesReplace[i] = null;
 
-					if (directDependency && _uniqueAssetGameDependenciesReplace[i] == null &&
-						_uniqueAssetGameDependenciesRemove[i] == false)
+					if (directDependency && _uniqueAssetReplaceDependenciesReplace[i] == null &&
+						_uniqueAssetReplaceDependenciesRemove[i] == false)
 						GUILayout.Label("... ignored", _itemDescriptionStyle);
 
 					GUILayout.FlexibleSpace();
@@ -631,9 +692,9 @@ namespace com.tgs.assetdependencymanager.editor
 			GUILayout.BeginHorizontal();
 			GUILayout.FlexibleSpace();
 			EditorGUI.BeginDisabledGroup(OriginalAssets == null || OriginalAssets.Count < 1 ||
-										 AssetGameDependencies == null || AssetGameDependencies.Count < 1 ||
-										 _uniqueAssetGameDependenciesReplace == null ||
-										 _uniqueAssetGameDependenciesReplace.Length < 1);
+										 AssetReplaceDependencies == null || AssetReplaceDependencies.Count < 1 ||
+										 _uniqueAssetReplaceDependenciesReplace == null ||
+										 _uniqueAssetReplaceDependenciesReplace.Length < 1);
 
 			if (GUILayout.Button("Replace References", GUILayout.Width(200)))
 			{
@@ -644,16 +705,18 @@ namespace com.tgs.assetdependencymanager.editor
 					List<(string originalGuid, string newGuid)> guidTable =
 						new List<(string originalGuid, string newGuid)>();
 
-					for (int i = 0; i < AssetGameDependencies.Count; i++)
+					for (int i = 0; i < AssetReplaceDependencies.Count; i++)
 					{
-						if (_uniqueAssetGameDependenciesReplace[i] == null &&
-							_uniqueAssetGameDependenciesRemove[i] == false)
+						if (_uniqueAssetReplaceDependenciesReplace[i] == null &&
+							_uniqueAssetReplaceDependenciesRemove[i] == false)
 							continue;
 
-						string originalGUID = AssetDatabase.GUIDFromAssetPath(AssetGameDependencies[i]).ToString();
-						string newGUID = AssetDatabase
-							.GUIDFromAssetPath(AssetDatabase.GetAssetPath(_uniqueAssetGameDependenciesReplace[i]))
-							.ToString();
+						string originalGUID = AssetDatabase.GUIDFromAssetPath(AssetReplaceDependencies[i]).ToString();
+						string newGUID = _uniqueAssetReplaceDependenciesRemove[i]
+							? EMPTY_GUID
+							: AssetDatabase
+								.GUIDFromAssetPath(AssetDatabase.GetAssetPath(_uniqueAssetReplaceDependenciesReplace[i]))
+								.ToString();
 
 						guidTable.Add((originalGUID, newGUID));
 					}
@@ -921,7 +984,7 @@ namespace com.tgs.assetdependencymanager.editor
 				}
 			}
 
-			foreach (var dependency in AssetGameDependencies)
+			foreach (var dependency in AssetGameDependencies.Concat(AssetTGSPackageDependencies))
 			{
 				if (selectedFiles.Contains(dependency))
 				{
@@ -1025,9 +1088,12 @@ namespace com.tgs.assetdependencymanager.editor
 		private static void ResetDependencyCaches()
 		{
 			_assetGameDependencies = null;
+			_assetTGSPackageDependencies = null;
 			_assetSystemDependencies = null;
-			_uniqueAssetGameDependencies = null;
-			_uniqueAssetGameDependenciesReplace = null;
+			_assetReplaceDependencies = null;
+			_uniqueAssetReplaceDependencies = null;
+			_uniqueAssetReplaceDependenciesReplace = null;
+			_uniqueAssetReplaceDependenciesRemove = null;
 		}
 
 		private void ResetDirectDependencyCache()
@@ -1077,7 +1143,7 @@ namespace com.tgs.assetdependencymanager.editor
 			var selectedAssetPaths = ResolveSelectedAssetPaths(OriginalAssets)
 				.Where(path => !string.IsNullOrEmpty(path))
 				.ToArray();
-			var dependencyPaths = GetGameAssetDependencies(selectedAssetPaths)
+			var dependencyPaths = GetGameAndTGSPackageDependencies(selectedAssetPaths)
 				.Where(path => !string.IsNullOrEmpty(path))
 				.ToArray();
 			var selectedPaths = selectedAssetPaths
@@ -1538,7 +1604,7 @@ namespace com.tgs.assetdependencymanager.editor
 
 			if (includeDependencies && selectedFiles.Count > 0)
 			{
-				var dependencies = GetGameAssetDependencies(selectedFiles.ToArray())
+				var dependencies = GetGameAndTGSPackageDependencies(selectedFiles.ToArray())
 					.Where(dep => !selectedFiles.Contains(dep))
 					.Where(dep => !AssetDatabase.IsValidFolder(dep))
 					.ToList();
@@ -1924,6 +1990,8 @@ namespace com.tgs.assetdependencymanager.editor
 			OriginalAssets = tmpAsset;
 
 			_assetGameDependencies = null;
+			_assetTGSPackageDependencies = null;
+			_assetReplaceDependencies = null;
 		}
 
 		private static void ReplaceReferences(Object originalAsset, List<(string originalGUID, string newGUID)> guidTable)
@@ -2135,13 +2203,21 @@ namespace com.tgs.assetdependencymanager.editor
 			return false;
 		}
 
+		private static bool IsTGSPackagePath(string dependency)
+		{
+			return !string.IsNullOrEmpty(dependency) &&
+				   dependency.IndexOf("TGSPackageManager", StringComparison.OrdinalIgnoreCase) >= 0;
+		}
+
 		private static bool IsSystemOrCommon(string dependency) => !dependency.Contains(DEPENDENCIES_BUNDLES_PATH) ||
-																   DEPENDENCIES_COMMON_BUNDLE_PATHS.Any(common =>
-																	   dependency.Contains(common));
+											   DEPENDENCIES_COMMON_BUNDLE_PATHS.Any(common =>
+												   dependency.Contains(common));
 
 		private static string[] GetSystemAssetDependencies(params string[] assets)
 		{
-			var deps = AssetDatabase.GetDependencies(assets, false).Where(d => IsSystemOrCommon(d)).ToList();
+			var deps = AssetDatabase.GetDependencies(assets, false)
+				.Where(d => IsSystemOrCommon(d) && !IsTGSPackagePath(d))
+				.ToList();
 			deps.Sort();
 			return deps.ToArray();
 		}
@@ -2152,10 +2228,59 @@ namespace com.tgs.assetdependencymanager.editor
 			List<string> dependencies = AssetDatabase.GetDependencies(assets, true).ToList();
 
 			// Remove original assets from dependencies    ||    Remove dependencies outside Bundles folder
-			dependencies.RemoveAll(d => (Array.IndexOf(assets, d) > -1) || IsSystemOrCommon(d));
+			dependencies.RemoveAll(d => (Array.IndexOf(assets, d) > -1) || IsSystemOrCommon(d) || IsTGSPackagePath(d));
 			dependencies.Sort();
 
 			return dependencies.ToArray();
+		}
+
+		private static string[] GetTGSPackageDependencies(params string[] assets)
+		{
+			assets = assets.Select(a => a.Replace("\\", "/")).ToArray();
+			List<string> dependencies = AssetDatabase.GetDependencies(assets, true).ToList();
+
+			dependencies.RemoveAll(d => (Array.IndexOf(assets, d) > -1) || !IsTGSPackagePath(d));
+			dependencies.Sort();
+
+			return dependencies.ToArray();
+		}
+
+		private static string[] GetGameAndTGSPackageDependencies(params string[] assets)
+		{
+			return GetGameAssetDependencies(assets)
+				.Concat(GetTGSPackageDependencies(assets))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+				.ToArray();
+		}
+
+		private static string GetDependencyGroupLabel(string dependency)
+		{
+			if (string.IsNullOrEmpty(dependency))
+			{
+				return "UNKNOWN";
+			}
+
+			var normalized = dependency.Replace("\\", "/");
+			if (normalized.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase))
+			{
+				var startOffset = "Packages/".Length;
+				var nextSlash = normalized.IndexOf("/", startOffset, StringComparison.Ordinal);
+				return nextSlash > startOffset
+					? normalized.Substring(startOffset, nextSlash - startOffset)
+					: normalized.Substring(startOffset);
+			}
+
+			if (normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+			{
+				var startOffset = "Assets/".Length;
+				var nextSlash = normalized.IndexOf("/", startOffset, StringComparison.Ordinal);
+				return nextSlash > startOffset
+					? normalized.Substring(startOffset, nextSlash - startOffset)
+					: normalized.Substring(startOffset);
+			}
+
+			return Path.GetFileName(normalized);
 		}
 
 		private static List<string> GetFilesRecursively(string path, Func<string, bool> criteria = null,
