@@ -2262,6 +2262,44 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			var normalized = dependency.Replace("\\", "/");
+
+			if (IsTGSPackagePath(normalized))
+			{
+				const string embeddedMarker = "/embedded_packages/";
+				var embeddedIndex = normalized.IndexOf(embeddedMarker, StringComparison.OrdinalIgnoreCase);
+				if (embeddedIndex >= 0)
+				{
+					var packageStart = embeddedIndex + embeddedMarker.Length;
+					if (packageStart < normalized.Length)
+					{
+						var packageEnd = normalized.IndexOf("/", packageStart, StringComparison.Ordinal);
+						if (packageEnd > packageStart)
+						{
+							return normalized.Substring(packageStart, packageEnd - packageStart);
+						}
+
+						return normalized.Substring(packageStart);
+					}
+				}
+
+				const string packagesMarker = "/Packages/";
+				var packagesIndex = normalized.IndexOf(packagesMarker, StringComparison.OrdinalIgnoreCase);
+				if (packagesIndex >= 0)
+				{
+					var packageStart = packagesIndex + packagesMarker.Length;
+					if (packageStart < normalized.Length)
+					{
+						var packageEnd = normalized.IndexOf("/", packageStart, StringComparison.Ordinal);
+						if (packageEnd > packageStart)
+						{
+							return normalized.Substring(packageStart, packageEnd - packageStart);
+						}
+
+						return normalized.Substring(packageStart);
+					}
+				}
+			}
+
 			if (normalized.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase))
 			{
 				var startOffset = "Packages/".Length;
