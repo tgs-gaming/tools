@@ -1212,10 +1212,11 @@ namespace com.tgs.packagemanager.editor
             RunGit(packageRoot, "commit -m \"" + EscapeGitMessage(commitMessage) + "\"", token, logErrors: true);
             var branch = BuildPackageBranchRef(package.id);
             RunGit(packageRoot,
-                "push " + QuoteGitArgument(remoteUrl) + " HEAD:" + branch,
+                "push -u " + QuoteGitArgument(remoteUrl) + " " + branch,
                 string.Empty,
-                "push " + GetRepositoryUrl(repository) + " HEAD:" + branch,
+                "push -u " + GetRepositoryUrl(repository) + " " + branch,
                 true);
+            RunGit(packageRoot, "fetch --all", token);
 
             Debug.Log("CreateVersion: tagging " + tag + " for " + package.id);
             RunGit(packageRoot, "tag " + tag, token, logErrors: true);
