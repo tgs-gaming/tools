@@ -10,6 +10,13 @@ namespace com.tgs.packagemanager.editor
 {
     public partial class ToolsPackageManagerWindow
     {
+        private const string PackageSearchFieldControlName = "PackageSearchField";
+
+        private string _packageSearchInput = string.Empty;
+        private string _appliedPackageSearch = string.Empty;
+        private readonly List<string> _recentPackageSearches = new List<string>();
+        private bool _packageSearchHasNoResults;
+
         private void OnGUI()
         {
             EditorGUILayout.LabelField("TGS Package Manager", EditorStyles.boldLabel);
@@ -180,6 +187,15 @@ namespace com.tgs.packagemanager.editor
         {
             EditorGUILayout.LabelField("Packages", EditorStyles.boldLabel);
             var snapshot = _usePackageListSnapshot ? _packageListSnapshot : null;
+            var listItems = snapshot != null
+                ? BuildPackageListItems(snapshot.Packages, snapshot.LocalPackagesCache, snapshot.InstalledVersionsCache,
+                    snapshot.PackageUnityRequirements, snapshot.PackageCompatibility)
+                : BuildPackageListItems(_packages);
+            _packageSearchHasNoResults = HasAppliedSearchWithNoResults(listItems);
+
+            DrawPackageSearchBar();
+            DrawPackageSearchSuggestions();
+
             using (new EditorGUILayout.HorizontalScope())
             {
                 EditorGUI.BeginDisabledGroup(_isBusy);
@@ -213,18 +229,13 @@ namespace com.tgs.packagemanager.editor
                 }
                 EditorGUI.EndDisabledGroup();
             }
-
-            var listItems = snapshot != null
-                ? BuildPackageListItems(snapshot.Packages, snapshot.LocalPackagesCache, snapshot.InstalledVersionsCache,
-                    snapshot.PackageUnityRequirements, snapshot.PackageCompatibility)
-                : BuildPackageListItems(_packages);
             if ((listItems == null || listItems.Count == 0) && _repositories.Count == 0)
             {
                 EditorGUILayout.HelpBox("No repositories configured.", MessageType.Info);
                 DrawRepositoryAccessErrors();
                 return;
             }
-            var packageTab = GUILayout.Toolbar(_selectedPackageListTab, BuildPackageListTabLabels(listItems));
+            var packageTab = GUILayout.Toolbar(_selectedPackageListTab, BuildPackageListTabLabels(listItems, _appliedPackageSearch));
             if (packageTab != _selectedPackageListTab)
             {
                 _selectedPackageListTab = packageTab;
@@ -280,6 +291,12 @@ namespace com.tgs.packagemanager.editor
                 {
                     filteredItems.Add(item);
                 }
+            }
+
+            if (!string.IsNullOrWhiteSpace(_appliedPackageSearch))
+            {
+                var searchText = _appliedPackageSearch.Trim();
+                filteredItems.RemoveAll(item => !PackageMatchesSearch(item, searchText));
             }
 
             if (filteredItems.Count == 0)
@@ -595,18 +612,187 @@ namespace com.tgs.packagemanager.editor
             DrawRepositoryAccessErrors();
         }
 
-        private static string[] BuildPackageListTabLabels(List<PackageListItem> listItems)
+        private void DrawPackageSearchBar()
+        {
+            var fieldHeight = EditorGUIUtility.singleLineHeight;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUI.SetNextControlName(PackageSearchFieldControlName);
+                _packageSearchInput = EditorGUILayout.TextField(_packageSearchInput,
+                    GUILayout.Width(300f),
+                    GUILayout.Height(fieldHeight));
+
+                var currentEvent = Event.current;
+                var enterPressed = currentEvent.type == EventType.KeyDown
+                    && (currentEvent.keyCode == KeyCode.Return || currentEvent.keyCode == KeyCode.KeypadEnter)
+                    && string.Equals(GUI.GetNameOfFocusedControl(), PackageSearchFieldControlName, StringComparison.Ordinal);
+                if (enterPressed)
+                {
+                    ApplyPackageSearchFromInput();
+                    currentEvent.Use();
+                }
+
+                var hasInput = !string.IsNullOrWhiteSpace(_packageSearchInput);
+                if (hasInput)
+                {
+                    var clearShouldBeRed = _packageSearchHasNoResults
+                        && string.Equals((_packageSearchInput ?? string.Empty).Trim(), _appliedPackageSearch ?? string.Empty,
+                            StringComparison.OrdinalIgnoreCase);
+                    var previousColor = GUI.backgroundColor;
+                    if (clearShouldBeRed)
+                    {
+                        GUI.backgroundColor = Color.red;
+                    }
+
+                    if (GUILayout.Button("X", GUILayout.Width(28f), GUILayout.Height(fieldHeight)))
+                    {
+                        _packageSearchInput = string.Empty;
+                        _appliedPackageSearch = string.Empty;
+                        GUI.FocusControl(null);
+                    }
+
+                    GUI.backgroundColor = previousColor;
+                }
+
+                var searchIcon = EditorGUIUtility.IconContent("Search Icon");
+                var searchContent = searchIcon != null && searchIcon.image != null
+                    ? new GUIContent(searchIcon.image, "Search")
+                    : new GUIContent("Search");
+                if (GUILayout.Button(searchContent, GUILayout.Width(32f), GUILayout.Height(fieldHeight)))
+                {
+                    ApplyPackageSearchFromInput();
+                }
+
+                GUILayout.FlexibleSpace();
+            }
+        }
+
+        private void DrawPackageSearchSuggestions()
+        {
+            var suggestions = BuildPackageSearchSuggestions();
+            if (suggestions.Count == 0)
+            {
+                return;
+            }
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                foreach (var suggestion in suggestions)
+                {
+                    if (GUILayout.Button(suggestion, GUILayout.Height(EditorGUIUtility.singleLineHeight)))
+                    {
+                        _packageSearchInput = string.Empty;
+                        _packageSearchInput = suggestion;
+                        ApplyPackageSearchFromInput();
+                        GUI.FocusControl(PackageSearchFieldControlName);
+                    }
+                }
+
+                GUILayout.FlexibleSpace();
+            }
+        }
+
+        private List<string> BuildPackageSearchSuggestions()
+        {
+            var suggestions = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var hardcodedSuggestions = new[] { "Feature", "TGS", "Spine" };
+            var hardcodedLookup = new HashSet<string>(hardcodedSuggestions, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var hardcoded in hardcodedSuggestions)
+            {
+                if (seen.Add(hardcoded))
+                {
+                    suggestions.Add(hardcoded);
+                }
+            }
+
+            var recentAdded = 0;
+            foreach (var recentSearch in _recentPackageSearches)
+            {
+                if (string.IsNullOrWhiteSpace(recentSearch))
+                {
+                    continue;
+                }
+
+                var normalized = recentSearch.Trim();
+                if (hardcodedLookup.Contains(normalized))
+                {
+                    continue;
+                }
+
+                if (seen.Add(normalized))
+                {
+                    suggestions.Add(normalized);
+                    recentAdded++;
+                }
+
+                if (recentAdded >= 2)
+                {
+                    break;
+                }
+            }
+
+            return suggestions;
+        }
+
+        private void ApplyPackageSearchFromInput()
+        {
+            _appliedPackageSearch = (_packageSearchInput ?? string.Empty).Trim();
+            if (!string.IsNullOrEmpty(_appliedPackageSearch))
+            {
+                _recentPackageSearches.RemoveAll(value => string.Equals(value, _appliedPackageSearch, StringComparison.OrdinalIgnoreCase));
+                _recentPackageSearches.Insert(0, _appliedPackageSearch);
+                if (_recentPackageSearches.Count > 20)
+                {
+                    _recentPackageSearches.RemoveRange(20, _recentPackageSearches.Count - 20);
+                }
+            }
+        }
+
+        private bool HasAppliedSearchWithNoResults(List<PackageListItem> listItems)
+        {
+            if (string.IsNullOrWhiteSpace(_appliedPackageSearch))
+            {
+                return false;
+            }
+
+            if (listItems == null || listItems.Count == 0)
+            {
+                return true;
+            }
+
+            var searchText = _appliedPackageSearch.Trim();
+            foreach (var item in listItems)
+            {
+                if (PackageMatchesSearch(item, searchText))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static string[] BuildPackageListTabLabels(List<PackageListItem> listItems, string searchText)
         {
             var embeddedCount = 0;
             var installedCount = 0;
             var availableCount = 0;
             var localCount = 0;
+            var hasSearch = !string.IsNullOrWhiteSpace(searchText);
+            var normalizedSearch = hasSearch ? searchText.Trim() : string.Empty;
 
             if (listItems != null)
             {
                 foreach (var item in listItems)
                 {
                     if (item == null || item.Package == null)
+                    {
+                        continue;
+                    }
+
+                    if (hasSearch && !PackageMatchesSearch(item, normalizedSearch))
                     {
                         continue;
                     }
@@ -642,6 +828,30 @@ namespace com.tgs.packagemanager.editor
                 PackageListTabs[2] + " [" + availableCount + "]",
                 PackageListTabs[3] + " [" + localCount + "]"
             };
+        }
+
+        private static bool PackageMatchesSearch(PackageListItem item, string searchText)
+        {
+            if (item == null || item.Package == null)
+            {
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(searchText))
+            {
+                return true;
+            }
+
+            var package = item.Package;
+            return ContainsIgnoreCase(package.displayName, searchText)
+                || ContainsIgnoreCase(package.author, searchText)
+                || ContainsIgnoreCase(package.description, searchText);
+        }
+
+        private static bool ContainsIgnoreCase(string value, string searchText)
+        {
+            return !string.IsNullOrEmpty(value)
+                && value.IndexOf(searchText, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void DrawAvailableBulkInstallActions(List<PackageListItem> filteredItems, PackageListSnapshot snapshot)
