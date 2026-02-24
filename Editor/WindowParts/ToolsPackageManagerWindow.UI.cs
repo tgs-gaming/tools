@@ -1217,6 +1217,16 @@ namespace com.tgs.packagemanager.editor
                         }
                     }
                     EditorGUI.EndDisabledGroup();
+
+                    if (_selectedPackageListTab == 0 || _selectedPackageListTab == 1)
+                    {
+                        EditorGUI.BeginDisabledGroup(_isBusy);
+                        if (GUILayout.Button("Refresh", GUILayout.Width(90f)))
+                        {
+                            StartOperation(RefreshSinglePackage(package));
+                        }
+                        EditorGUI.EndDisabledGroup();
+                    }
                 }
 
                 if (!isInstalled && !isUpmInstalled)
