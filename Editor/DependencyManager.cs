@@ -98,6 +98,8 @@ namespace com.tgs.assetdependencymanager.editor
 		private int _selectedTab;
 		private bool _previewFoldout = true;
 		private string _duplicateSubFolder = "_Duplicated_Assets";
+		private bool _keepFolderStructure = false;
+		private string _dependenciesFolder = DEPENDENCIES_PATH;
 		private string _externalDestinationPath;
 		private int _objectPickerId = -1;
 		private int _objectPickerIndex = -1;
@@ -565,6 +567,8 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			_duplicateSubFolder = EditorGUILayout.TextField("SubFolder", _duplicateSubFolder);
+			_keepFolderStructure = EditorGUILayout.Toggle("Keep folder Structure", _keepFolderStructure);
+			_dependenciesFolder = EditorGUILayout.TextField("Dependencies Folder", _dependenciesFolder);
 
 			var codeReferencesComplete = DrawCodeReferencesSection();
 
@@ -591,7 +595,8 @@ namespace com.tgs.assetdependencymanager.editor
 					try
 					{
 						var destinationPath = GetDestinationPath();
-						DuplicateAsset(OriginalAssets.ToArray(), destinationPath, GetDuplicateSubFolder());
+						DuplicateAsset(OriginalAssets.ToArray(), destinationPath, GetDuplicateSubFolder(),
+							GetDependenciesFolder(), _keepFolderStructure);
 						var resolvedDestination = BuildDestinationBasePath(
 							destinationPath,
 							GetDuplicateSubFolder());
@@ -823,7 +828,7 @@ namespace com.tgs.assetdependencymanager.editor
 
 			if (GUILayout.Button("Export TGS Package", GUILayout.Width(200)))
 			{
-				ExportSelectedPackages(OriginalAssets, GetDuplicateSubFolder());
+				ExportSelectedPackages(OriginalAssets, GetDuplicateSubFolder(), GetDependenciesFolder(), _keepFolderStructure);
 			}
 
 			EditorGUI.EndDisabledGroup();
@@ -952,50 +957,121 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			var basePath = BuildDestinationBasePath(destinationPath);
-			var selectedFiles = new HashSet<string>(ResolveSelectedAssetPaths(OriginalAssets),
-				StringComparer.OrdinalIgnoreCase);
-			var rootPaths = ResolveSelectedRootPaths(OriginalAssets);
+			var dependenciesBasePath = BuildDependenciesBasePath(basePath, GetDependenciesFolder());
+			BuildSelectionPlan(OriginalAssets?.ToArray(), out var folderRoots, out var fileRoots, out var selectedFiles,
+				out var selectedFileAnchorRoots);
+			var rootPaths = folderRoots.Concat(fileRoots).ToList();
+			var dependencyPaths = AssetGameDependencies
+				.Concat(AssetTGSPackageDependencies)
+				.Where(dep => !selectedFiles.Contains(dep))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToList();
 
-			foreach (var rootPath in rootPaths)
+			Dictionary<string, string> selectedFileRoots = null;
+			Dictionary<string, string> dependencyRoots = null;
+			if (_keepFolderStructure)
 			{
-				if (AssetDatabase.IsValidFolder(rootPath))
+				BuildPerAssetStructureRoots(selectedFiles, dependencyPaths, selectedFileAnchorRoots,
+					out selectedFileRoots, out dependencyRoots);
+			}
+
+			if (_keepFolderStructure)
+			{
+				foreach (var selectedFile in selectedFiles.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 				{
-					var folderName = Path.GetFileName(rootPath);
-					if (!string.IsNullOrEmpty(folderName))
+					if (!selectedFileRoots.TryGetValue(selectedFile, out var structureRoot))
 					{
-						previewItems.Add(Path.Combine(basePath, folderName).Replace("\\", "/"));
+						if (!selectedFileAnchorRoots.TryGetValue(selectedFile, out structureRoot))
+						{
+							structureRoot = Path.GetDirectoryName(selectedFile)?.Replace("\\", "/") ?? string.Empty;
+						}
 					}
 
-					foreach (var filePath in EnumerateFolderAssets(rootPath))
+					var relativePath = GetRelativePathFromStructureRoot(selectedFile, structureRoot);
+					if (string.IsNullOrEmpty(relativePath))
 					{
-						var relative = filePath.Substring(rootPath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-						var renamedRelative = RenameAsmdefFilenameInPath(relative);
-						previewItems.Add(Path.Combine(basePath, folderName, renamedRelative).Replace("\\", "/"));
+						relativePath = Path.GetFileName(selectedFile);
+					}
+
+					if (!string.IsNullOrEmpty(relativePath))
+					{
+						var renamedRelative = RenameAsmdefFilenameInPath(relativePath);
+						previewItems.Add(Path.Combine(basePath, renamedRelative).Replace("\\", "/"));
 					}
 				}
-				else
+
+				var dependencyPreviewItems = new List<(string RelativePath, string PreviewPath)>();
+				foreach (var dependency in dependencyPaths)
 				{
-					var fileName = Path.GetFileName(rootPath);
+					if (!dependencyRoots.TryGetValue(dependency, out var structureRoot))
+					{
+						structureRoot = string.Empty;
+					}
+
+					var relativePath = GetRelativePathFromStructureRoot(dependency, structureRoot);
+					if (string.IsNullOrEmpty(relativePath))
+					{
+						relativePath = GetDependencyRelativePath(dependency, rootPaths);
+					}
+
+					if (!string.IsNullOrEmpty(relativePath))
+					{
+						var renamedRelativePath = RenameAsmdefFilenameInPath(relativePath);
+						dependencyPreviewItems.Add((
+							renamedRelativePath.Replace("\\", "/"),
+							Path.Combine(dependenciesBasePath, renamedRelativePath).Replace("\\", "/")));
+					}
+				}
+
+				foreach (var dependencyItem in dependencyPreviewItems
+					.OrderBy(item => Path.GetDirectoryName(item.RelativePath)?.Replace("\\", "/") ?? string.Empty,
+						StringComparer.OrdinalIgnoreCase)
+					.ThenBy(item => Path.GetFileName(item.RelativePath), StringComparer.OrdinalIgnoreCase)
+					.ThenBy(item => item.RelativePath, StringComparer.OrdinalIgnoreCase))
+				{
+					previewItems.Add(dependencyItem.PreviewPath);
+				}
+			}
+			else
+			{
+				foreach (var rootPath in rootPaths)
+				{
+					if (AssetDatabase.IsValidFolder(rootPath))
+					{
+						var folderName = Path.GetFileName(rootPath);
+						if (!string.IsNullOrEmpty(folderName))
+						{
+							previewItems.Add(Path.Combine(basePath, folderName).Replace("\\", "/"));
+						}
+
+						foreach (var filePath in EnumerateFolderAssets(rootPath))
+						{
+							var relative = filePath.Substring(rootPath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+							var renamedRelative = RenameAsmdefFilenameInPath(relative);
+							previewItems.Add(Path.Combine(basePath, folderName, renamedRelative).Replace("\\", "/"));
+						}
+					}
+					else
+					{
+						var fileName = Path.GetFileName(rootPath);
+						if (!string.IsNullOrEmpty(fileName))
+						{
+							var renamedFileName = RenameAsmdefFilenameInPath(fileName);
+							previewItems.Add(Path.Combine(basePath, renamedFileName).Replace("\\", "/"));
+						}
+					}
+				}
+
+				foreach (var dependency in dependencyPaths
+					.OrderBy(dep => Path.GetFileName(dep), StringComparer.OrdinalIgnoreCase)
+					.ThenBy(dep => dep, StringComparer.OrdinalIgnoreCase))
+				{
+					var fileName = Path.GetFileName(dependency);
 					if (!string.IsNullOrEmpty(fileName))
 					{
 						var renamedFileName = RenameAsmdefFilenameInPath(fileName);
-						previewItems.Add(Path.Combine(basePath, renamedFileName).Replace("\\", "/"));
+						previewItems.Add(Path.Combine(dependenciesBasePath, renamedFileName).Replace("\\", "/"));
 					}
-				}
-			}
-
-			foreach (var dependency in AssetGameDependencies.Concat(AssetTGSPackageDependencies))
-			{
-				if (selectedFiles.Contains(dependency))
-				{
-					continue;
-				}
-
-				var fileName = Path.GetFileName(dependency);
-				if (!string.IsNullOrEmpty(fileName))
-				{
-					var renamedFileName = RenameAsmdefFilenameInPath(fileName);
-					previewItems.Add(Path.Combine(basePath, DEPENDENCIES_PATH, renamedFileName).Replace("\\", "/"));
 				}
 			}
 
@@ -1005,6 +1081,11 @@ namespace com.tgs.assetdependencymanager.editor
 		private string GetDuplicateSubFolder()
 		{
 			return string.IsNullOrWhiteSpace(_duplicateSubFolder) ? string.Empty : _duplicateSubFolder.Trim();
+		}
+
+		private string GetDependenciesFolder()
+		{
+			return NormalizeDependenciesFolder(_dependenciesFolder);
 		}
 
 		private string RenameAsmdefFilenameInPath(string path)
@@ -1047,6 +1128,191 @@ namespace com.tgs.assetdependencymanager.editor
 			return string.IsNullOrEmpty(duplicateSubFolder)
 				? destinationPath.Replace("\\", "/")
 				: Path.Combine(destinationPath, duplicateSubFolder).Replace("\\", "/");
+		}
+
+		private static string BuildDependenciesBasePath(string basePath, string dependenciesFolder)
+		{
+			var normalizedDependenciesFolder = NormalizeDependenciesFolder(dependenciesFolder);
+			if (string.IsNullOrEmpty(normalizedDependenciesFolder))
+			{
+				return basePath;
+			}
+
+			return Path.Combine(basePath, normalizedDependenciesFolder).Replace("\\", "/");
+		}
+
+		private static string NormalizeDependenciesFolder(string dependenciesFolder)
+		{
+			if (string.IsNullOrWhiteSpace(dependenciesFolder))
+			{
+				return string.Empty;
+			}
+
+			return dependenciesFolder.Trim().Replace("\\", "/").Trim('/');
+		}
+
+		private static string GetDependencyRelativePath(string dependencyPath, IEnumerable<string> rootPaths)
+		{
+			if (string.IsNullOrEmpty(dependencyPath))
+			{
+				return string.Empty;
+			}
+
+			var normalizedDependency = dependencyPath.Replace("\\", "/");
+			if (rootPaths != null)
+			{
+				var normalizedRoots = rootPaths
+					.Where(path => !string.IsNullOrEmpty(path))
+					.Select(path => path.Replace("\\", "/"))
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.OrderByDescending(path => path.Length)
+					.ToList();
+
+				foreach (var rootPath in normalizedRoots)
+				{
+					if (AssetDatabase.IsValidFolder(rootPath))
+					{
+						if (TryGetRelativePath(normalizedDependency, rootPath, out var relativeFromFolder))
+						{
+							return relativeFromFolder;
+						}
+					}
+					else
+					{
+						var rootDirectory = Path.GetDirectoryName(rootPath)?.Replace("\\", "/");
+						if (TryGetRelativePath(normalizedDependency, rootDirectory, out var relativeFromFileRoot))
+						{
+							return relativeFromFileRoot;
+						}
+					}
+				}
+			}
+
+			if (normalizedDependency.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+			{
+				return normalizedDependency.Substring("Assets/".Length);
+			}
+
+			if (normalizedDependency.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase))
+			{
+				return normalizedDependency.Substring("Packages/".Length);
+			}
+
+			return Path.GetFileName(normalizedDependency);
+		}
+
+		private static string DetermineKeepStructureRoot(IEnumerable<string> selectedFiles, IEnumerable<string> dependencyPaths)
+		{
+			var allPaths = new List<string>();
+			if (selectedFiles != null)
+			{
+				allPaths.AddRange(selectedFiles.Where(path => !string.IsNullOrEmpty(path)));
+			}
+
+			if (dependencyPaths != null)
+			{
+				allPaths.AddRange(dependencyPaths.Where(path => !string.IsNullOrEmpty(path)));
+			}
+
+			if (allPaths.Count == 0)
+			{
+				return string.Empty;
+			}
+
+			var normalizedPaths = allPaths
+				.Select(path => path.Replace("\\", "/"))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.ToList();
+
+			var commonRoot = GetCommonPathPrefix(normalizedPaths);
+			if (string.IsNullOrEmpty(commonRoot))
+			{
+				return string.Empty;
+			}
+
+			if (!AssetDatabase.IsValidFolder(commonRoot))
+			{
+				commonRoot = Path.GetDirectoryName(commonRoot)?.Replace("\\", "/") ?? string.Empty;
+			}
+
+			return commonRoot?.TrimEnd('/') ?? string.Empty;
+		}
+
+		private static string GetRelativePathFromStructureRoot(string fullPath, string structureRoot)
+		{
+			if (string.IsNullOrEmpty(fullPath) || string.IsNullOrEmpty(structureRoot))
+			{
+				return string.Empty;
+			}
+
+			var normalizedPath = fullPath.Replace("\\", "/");
+			var normalizedRoot = structureRoot.Replace("\\", "/").TrimEnd('/');
+			return TryGetRelativePath(normalizedPath, normalizedRoot, out var relativePath)
+				? relativePath
+				: string.Empty;
+		}
+
+		private static string GetCommonPathPrefix(List<string> paths)
+		{
+			if (paths == null || paths.Count == 0)
+			{
+				return string.Empty;
+			}
+
+			var splitPaths = paths
+				.Select(path => path.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries))
+				.ToList();
+
+			if (splitPaths.Count == 0)
+			{
+				return string.Empty;
+			}
+
+			var minLen = splitPaths.Min(parts => parts.Length);
+			if (minLen == 0)
+			{
+				return string.Empty;
+			}
+
+			var commonParts = new List<string>();
+			for (int i = 0; i < minLen; i++)
+			{
+				var current = splitPaths[0][i];
+				if (splitPaths.All(parts => string.Equals(parts[i], current, StringComparison.OrdinalIgnoreCase)))
+				{
+					commonParts.Add(current);
+				}
+				else
+				{
+					break;
+				}
+			}
+
+			return commonParts.Count == 0 ? string.Empty : string.Join("/", commonParts);
+		}
+
+		private static bool TryGetRelativePath(string fullPath, string rootPath, out string relativePath)
+		{
+			relativePath = null;
+			if (string.IsNullOrEmpty(fullPath) || string.IsNullOrEmpty(rootPath))
+			{
+				return false;
+			}
+
+			if (string.Equals(fullPath, rootPath, StringComparison.OrdinalIgnoreCase))
+			{
+				relativePath = Path.GetFileName(fullPath);
+				return !string.IsNullOrEmpty(relativePath);
+			}
+
+			var prefix = rootPath.EndsWith("/", StringComparison.Ordinal) ? rootPath : rootPath + "/";
+			if (!fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+			{
+				return false;
+			}
+
+			relativePath = fullPath.Substring(prefix.Length).TrimStart('/', '\\');
+			return !string.IsNullOrEmpty(relativePath);
 		}
 
 		private static string TryGetAssetPathFromFullPath(string fullPath)
@@ -1556,7 +1822,8 @@ namespace com.tgs.assetdependencymanager.editor
 		// ========================== DUPLICATE ASSET ============================
 
 
-		private void DuplicateAsset(Object[] assets, string destinationPath, string duplicateSubFolder)
+		private void DuplicateAsset(Object[] assets, string destinationPath, string duplicateSubFolder,
+			string dependenciesFolder, bool keepFolderStructure)
 		{
 			if (assets == null || assets.Length == 0)
 			{
@@ -1568,7 +1835,8 @@ namespace com.tgs.assetdependencymanager.editor
 				return;
 			}
 
-			var copiedFiles = CopySelectionToDestination(assets, destinationPath, duplicateSubFolder, true);
+			var copiedFiles = CopySelectionToDestination(assets, destinationPath, duplicateSubFolder,
+				dependenciesFolder, keepFolderStructure, true);
 			ApplyCodeReferenceRenames(copiedFiles);
 			RemapGuids(copiedFiles.ToList());
 			AssetDatabase.SaveAssets();
@@ -1581,7 +1849,7 @@ namespace com.tgs.assetdependencymanager.editor
 		}
 
 		private static HashSet<string> CopySelectionToDestination(Object[] assets, string destinationPath, string duplicateSubFolder,
-			bool includeDependencies)
+			string dependenciesFolder, bool keepFolderStructure, bool includeDependencies)
 		{
 			var copiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			if (assets == null || assets.Length == 0)
@@ -1589,37 +1857,98 @@ namespace com.tgs.assetdependencymanager.editor
 				return copiedFiles;
 			}
 
-			BuildSelectionPlan(assets, out var folderRoots, out var fileRoots, out var selectedFiles);
+			BuildSelectionPlan(assets, out var folderRoots, out var fileRoots, out var selectedFiles,
+				out var selectedFileAnchorRoots);
 			var basePath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
-
-			foreach (var folderRoot in folderRoots)
-			{
-				CopyFolderRoot(folderRoot, basePath, copiedFiles);
-			}
-
-			foreach (var fileRoot in fileRoots)
-			{
-				CopyFileRoot(fileRoot, basePath, copiedFiles);
-			}
-
-			if (includeDependencies && selectedFiles.Count > 0)
-			{
-				var dependencies = GetGameAndTGSPackageDependencies(selectedFiles.ToArray())
+			var dependenciesBasePath = BuildDependenciesBasePath(basePath, dependenciesFolder);
+			var dependencies = includeDependencies && selectedFiles.Count > 0
+				? GetGameAndTGSPackageDependencies(selectedFiles.ToArray())
 					.Where(dep => !selectedFiles.Contains(dep))
 					.Where(dep => !AssetDatabase.IsValidFolder(dep))
-					.ToList();
+					.ToList()
+				: new List<string>();
+			Dictionary<string, string> selectedFileRoots = null;
+			Dictionary<string, string> dependencyRoots = null;
+			if (keepFolderStructure)
+			{
+				BuildPerAssetStructureRoots(selectedFiles, dependencies, selectedFileAnchorRoots,
+					out selectedFileRoots, out dependencyRoots);
+			}
+			var rootPaths = folderRoots.Concat(fileRoots).ToList();
 
-				if (dependencies.Count > 0)
+			if (keepFolderStructure)
+			{
+				foreach (var selectedFile in selectedFiles.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
 				{
-					var depsPath = Path.Combine(basePath, DEPENDENCIES_PATH);
-					if (!Directory.Exists(depsPath))
+					if (!selectedFileRoots.TryGetValue(selectedFile, out var structureRoot))
 					{
-						Directory.CreateDirectory(depsPath);
+						if (!selectedFileAnchorRoots.TryGetValue(selectedFile, out structureRoot))
+						{
+							structureRoot = Path.GetDirectoryName(selectedFile)?.Replace("\\", "/") ?? string.Empty;
+						}
 					}
 
-					foreach (var dep in dependencies)
+					var relativePath = GetRelativePathFromStructureRoot(selectedFile, structureRoot);
+					if (string.IsNullOrEmpty(relativePath))
 					{
-						CopyFileWithMeta(dep, depsPath, copiedFiles);
+						relativePath = Path.GetFileName(selectedFile);
+					}
+
+					if (string.IsNullOrEmpty(relativePath))
+					{
+						continue;
+					}
+
+					var destinationPathForSelection = Path.Combine(basePath, relativePath);
+					CopyFileWithMeta(selectedFile, Path.GetDirectoryName(destinationPathForSelection), copiedFiles,
+						destinationPathForSelection);
+				}
+			}
+			else
+			{
+				foreach (var folderRoot in folderRoots)
+				{
+					CopyFolderRoot(folderRoot, basePath, copiedFiles, false, string.Empty);
+				}
+
+				foreach (var fileRoot in fileRoots)
+				{
+					CopyFileRoot(fileRoot, basePath, copiedFiles, false, string.Empty);
+				}
+			}
+
+			if (dependencies.Count > 0)
+			{
+				if (!Directory.Exists(dependenciesBasePath))
+				{
+					Directory.CreateDirectory(dependenciesBasePath);
+				}
+
+				foreach (var dep in dependencies)
+				{
+					if (keepFolderStructure)
+					{
+						var structureRoot = dependencyRoots != null && dependencyRoots.TryGetValue(dep, out var mappedRoot)
+							? mappedRoot
+							: string.Empty;
+						var relativePath = GetRelativePathFromStructureRoot(dep, structureRoot);
+						if (string.IsNullOrEmpty(relativePath))
+						{
+							relativePath = GetDependencyRelativePath(dep, rootPaths);
+						}
+
+						if (string.IsNullOrEmpty(relativePath))
+						{
+							relativePath = Path.GetFileName(dep);
+						}
+
+						var destinationPathForDependency = Path.Combine(dependenciesBasePath, relativePath);
+						CopyFileWithMeta(dep, Path.GetDirectoryName(destinationPathForDependency), copiedFiles,
+							destinationPathForDependency);
+					}
+					else
+					{
+						CopyFileWithMeta(dep, dependenciesBasePath, copiedFiles);
 					}
 				}
 			}
@@ -1627,7 +1956,8 @@ namespace com.tgs.assetdependencymanager.editor
 			return copiedFiles;
 		}
 
-		private static void CopyFileRoot(string sourcePath, string basePath, HashSet<string> copiedFiles)
+		private static void CopyFileRoot(string sourcePath, string basePath, HashSet<string> copiedFiles,
+			bool keepFolderStructure, string keepStructureRoot)
 		{
 			if (string.IsNullOrEmpty(sourcePath))
 			{
@@ -1640,6 +1970,17 @@ namespace com.tgs.assetdependencymanager.editor
 				return;
 			}
 
+			if (keepFolderStructure)
+			{
+				var relativePath = GetRelativePathFromStructureRoot(sourcePath, keepStructureRoot);
+				if (!string.IsNullOrEmpty(relativePath))
+				{
+					var destinationPath = Path.Combine(basePath, relativePath);
+					CopyFileWithMeta(sourcePath, Path.GetDirectoryName(destinationPath), copiedFiles, destinationPath);
+					return;
+				}
+			}
+
 			if (!Directory.Exists(basePath))
 			{
 				Directory.CreateDirectory(basePath);
@@ -1648,7 +1989,8 @@ namespace com.tgs.assetdependencymanager.editor
 			CopyFileWithMeta(sourcePath, basePath, copiedFiles);
 		}
 
-		private static void CopyFolderRoot(string folderPath, string basePath, HashSet<string> copiedFiles)
+		private static void CopyFolderRoot(string folderPath, string basePath, HashSet<string> copiedFiles,
+			bool keepFolderStructure, string keepStructureRoot)
 		{
 			if (string.IsNullOrEmpty(folderPath))
 			{
@@ -1669,9 +2011,20 @@ namespace com.tgs.assetdependencymanager.editor
 			{
 				if (EditorUtility.DisplayCancelableProgressBar("Duplicating...", "Copying " + Path.GetFileName(folderAssets[i]),
 						(float)i / total)) throw new OperationCanceledException();
-				var relative = folderAssets[i].Substring(folderPath.Length)
-					.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-				var destPath = Path.Combine(destRoot, relative);
+				string destPath;
+				if (keepFolderStructure)
+				{
+					var relativePath = GetRelativePathFromStructureRoot(folderAssets[i], keepStructureRoot);
+					destPath = string.IsNullOrEmpty(relativePath)
+						? Path.Combine(destRoot, Path.GetFileName(folderAssets[i]))
+						: Path.Combine(basePath, relativePath);
+				}
+				else
+				{
+					var relative = folderAssets[i].Substring(folderPath.Length)
+						.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+					destPath = Path.Combine(destRoot, relative);
+				}
 				CopyFileWithMeta(folderAssets[i], Path.GetDirectoryName(destPath), copiedFiles, destPath);
 			}
 
@@ -1858,11 +2211,12 @@ namespace com.tgs.assetdependencymanager.editor
 		}
 
 		private static void BuildSelectionPlan(Object[] assets, out List<string> folderRoots, out List<string> fileRoots,
-			out HashSet<string> selectedFiles)
+			out HashSet<string> selectedFiles, out Dictionary<string, string> selectedFileAnchorRoots)
 		{
 			folderRoots = new List<string>();
 			fileRoots = new List<string>();
 			selectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			selectedFileAnchorRoots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
 			if (assets == null)
 			{
@@ -1884,6 +2238,7 @@ namespace com.tgs.assetdependencymanager.editor
 
 				if (AssetDatabase.IsValidFolder(path))
 				{
+					var normalizedFolderPath = path.Replace("\\", "/");
 					if (!folderRoots.Contains(path))
 					{
 						folderRoots.Add(path);
@@ -1892,6 +2247,10 @@ namespace com.tgs.assetdependencymanager.editor
 					foreach (var assetPath in EnumerateFolderAssets(path))
 					{
 						selectedFiles.Add(assetPath);
+						if (!selectedFileAnchorRoots.ContainsKey(assetPath))
+						{
+							selectedFileAnchorRoots[assetPath] = normalizedFolderPath;
+						}
 					}
 				}
 				else
@@ -1902,6 +2261,10 @@ namespace com.tgs.assetdependencymanager.editor
 					}
 
 					selectedFiles.Add(path);
+					if (!selectedFileAnchorRoots.ContainsKey(path))
+					{
+						selectedFileAnchorRoots[path] = Path.GetDirectoryName(path)?.Replace("\\", "/") ?? string.Empty;
+					}
 				}
 			}
 		}
@@ -2065,7 +2428,8 @@ namespace com.tgs.assetdependencymanager.editor
 
 		// ========================== EXPORTER ============================
 
-		public static void ExportSelectedPackages(List<Object> assets, string duplicateSubFolder = "_Duplicated_Assets")
+		public static void ExportSelectedPackages(List<Object> assets, string duplicateSubFolder = "_Duplicated_Assets",
+			string dependenciesFolder = DEPENDENCIES_PATH, bool keepFolderStructure = true)
 		{
 			if (assets == null || assets.Count == 0)
 			{
@@ -2090,7 +2454,8 @@ namespace com.tgs.assetdependencymanager.editor
 				if (!Directory.Exists(selectedPathInner))
 					Directory.CreateDirectory(selectedPathInner);
 
-				var copiedFiles = CopySelectionToDestination(assets.ToArray(), selectedPathInner, duplicateSubFolder, true);
+				var copiedFiles = CopySelectionToDestination(assets.ToArray(), selectedPathInner, duplicateSubFolder,
+					dependenciesFolder, keepFolderStructure, true);
 				var window = GetOpenWindow();
 				if (window != null)
 				{
@@ -2319,6 +2684,67 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			return Path.GetFileName(normalized);
+		}
+
+		private static void BuildPerAssetStructureRoots(IEnumerable<string> selectedFiles, IEnumerable<string> dependencies,
+			Dictionary<string, string> selectedFileAnchorRoots,
+			out Dictionary<string, string> selectedFileRoots, out Dictionary<string, string> dependencyRoots)
+		{
+			selectedFileRoots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+			dependencyRoots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+			var selectedList = selectedFiles?
+				.Where(path => !string.IsNullOrEmpty(path))
+				.Select(path => path.Replace("\\", "/"))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+				.ToList() ?? new List<string>();
+
+			var dependencySet = new HashSet<string>(
+				dependencies?
+					.Where(path => !string.IsNullOrEmpty(path))
+					.Select(path => path.Replace("\\", "/"))
+				?? Enumerable.Empty<string>(),
+				StringComparer.OrdinalIgnoreCase);
+
+			foreach (var selectedFile in selectedList)
+			{
+				if (!selectedFileAnchorRoots.TryGetValue(selectedFile, out var anchorRoot))
+				{
+					anchorRoot = Path.GetDirectoryName(selectedFile)?.Replace("\\", "/") ?? string.Empty;
+				}
+
+				var dependenciesForAsset = GetGameAndTGSPackageDependencies(selectedFile)
+					.Where(dep => !string.IsNullOrEmpty(dep))
+					.Select(dep => dep.Replace("\\", "/"))
+					.Where(dep => !selectedList.Contains(dep))
+					.Where(dep => dependencySet.Contains(dep))
+					.ToList();
+
+				string structureRoot;
+				if (dependenciesForAsset.Count == 0)
+				{
+					structureRoot = anchorRoot;
+				}
+				else
+				{
+					structureRoot = DetermineKeepStructureRoot(new[] { selectedFile }, dependenciesForAsset);
+					if (string.IsNullOrEmpty(structureRoot))
+					{
+						structureRoot = anchorRoot;
+					}
+				}
+
+				selectedFileRoots[selectedFile] = structureRoot;
+
+				foreach (var dependencyPath in dependenciesForAsset)
+				{
+					if (!dependencyRoots.ContainsKey(dependencyPath))
+					{
+						dependencyRoots[dependencyPath] = structureRoot;
+					}
+				}
+			}
 		}
 
 		private static List<string> GetFilesRecursively(string path, Func<string, bool> criteria = null,
