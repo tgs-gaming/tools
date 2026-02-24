@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.5 - 2026-02-24
+- Added individual package refresh buttons
+- Fixed 'Tag this version' not pushing branch
+
+
 ## 2.1.4 - 2026-02-24
 - Added search support
 
