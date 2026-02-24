@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.7 - 2026-02-24
+- Fixed .skel.bytes duplicate
+
+
 ## 1.1.6 - 2026-02-24
 - Added multi-folder copy support
 
