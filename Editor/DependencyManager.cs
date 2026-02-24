@@ -2565,6 +2565,7 @@ namespace com.tgs.assetdependencymanager.editor
 				filePath.EndsWith(".avi") || filePath.EndsWith(".webm") || filePath.EndsWith(".asf")) return true;
 			if (filePath.EndsWith(".ttf") || filePath.EndsWith(".otf")) return true;
 			if (filePath.EndsWith(".fbx")) return true;
+			if (filePath.EndsWith(".bytes") || filePath.EndsWith(".skel") || filePath.EndsWith(".skel.bytes")) return true;
 			return false;
 		}
 
