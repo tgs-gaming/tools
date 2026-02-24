@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.6 - 2026-02-24
+- Added multi-folder copy support
+
+
 ## 1.1.5 - 2026-02-24
 - Improved TGS package listing
 
