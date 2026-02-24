@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.5 - 2026-02-24
+- Improved TGS package listing
+
+
 ## 1.1.4 - 2026-02-24
 - Added TGS Package Manager support
 
