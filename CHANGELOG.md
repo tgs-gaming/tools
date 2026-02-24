@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.4 - 2026-02-24
+- Added TGS Package Manager support
+
+
 ## 1.1.3 - 2026-02-10
 - Package marked as required
 
