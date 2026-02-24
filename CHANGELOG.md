@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.4 - 2026-02-24
+- Added search support
+
+
 ## 2.1.3 - 2026-02-23
 - Improved repository listing
 
