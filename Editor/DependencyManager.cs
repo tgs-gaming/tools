@@ -112,6 +112,7 @@ namespace com.tgs.assetdependencymanager.editor
 		private readonly Dictionary<string, string> _asmdefFileRenames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		private readonly Dictionary<string, string> _rootNamespaceRenames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		private readonly Dictionary<string, string> _asmdefNameRenames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		private readonly HashSet<string> _asmdefFilesToRemove = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		private static readonly string[] Tabs = { "Copy To", "Replace References", "Export & Import" };
 
 		private static List<Object> _originalAssets;
@@ -541,9 +542,9 @@ namespace com.tgs.assetdependencymanager.editor
 				}
 				else
 				{
-					EditorGUI.BeginDisabledGroup(true);
+					// EditorGUI.BeginDisabledGroup(true);
 					EditorGUILayout.TextField("Destination", _externalDestinationPath);
-					EditorGUI.EndDisabledGroup();
+					// EditorGUI.EndDisabledGroup();
 				}
 
 				if (GUILayout.Button("Browse", GUILayout.Width(80f)))
@@ -780,9 +781,53 @@ namespace com.tgs.assetdependencymanager.editor
 					}
 
 					DrawPatternRenameSection("Namespaces", codeRefs.NamespacePatterns, _namespaceRenames);
-					DrawPatternRenameSection("Assembly Definition filenames", codeRefs.AsmdefFilePatterns, _asmdefFileRenames);
-					DrawPatternRenameSection("Root Namespaces", codeRefs.RootNamespacePatterns, _rootNamespaceRenames);
-					DrawPatternRenameSection("Asmdef Names", codeRefs.AsmdefNamePatterns, _asmdefNameRenames);
+
+					if (codeRefs.AsmdefPaths.Count > 0 ||
+						codeRefs.AsmdefFilePatterns.Count > 0 ||
+						codeRefs.RootNamespacePatterns.Count > 0 ||
+						codeRefs.AsmdefNamePatterns.Count > 0)
+					{
+						GUILayout.Space(6);
+						using (new EditorGUILayout.VerticalScope("box"))
+						{
+							EditorGUILayout.LabelField("Asmdef Files", _itemSubtitleStyle);
+
+							var changed = false;
+							foreach (var asmdefPath in codeRefs.AsmdefPaths)
+							{
+								var normalizedPath = NormalizePathForComparison(asmdefPath);
+								var removeFile = _asmdefFilesToRemove.Contains(normalizedPath);
+
+								EditorGUILayout.BeginHorizontal();
+								var newRemoveFile = EditorGUILayout.ToggleLeft("Remove .asmdef file", removeFile, GUILayout.Width(160f));
+								GUILayout.Label(normalizedPath, _itemDescriptionStyle);
+								EditorGUILayout.EndHorizontal();
+
+								if (newRemoveFile != removeFile)
+								{
+									changed = true;
+									if (newRemoveFile)
+									{
+										_asmdefFilesToRemove.Add(normalizedPath);
+									}
+									else
+									{
+										_asmdefFilesToRemove.Remove(normalizedPath);
+									}
+								}
+							}
+
+							if (changed)
+							{
+								ResetCodeReferencesCache();
+								codeRefs = GetCodeReferencesCached();
+							}
+
+							DrawPatternRenameSection("Assembly Definition filenames", codeRefs.AsmdefFilePatterns, _asmdefFileRenames);
+							DrawPatternRenameSection("Root Namespaces", codeRefs.RootNamespacePatterns, _rootNamespaceRenames);
+							DrawPatternRenameSection("Asmdef Names", codeRefs.AsmdefNamePatterns, _asmdefNameRenames);
+						}
+					}
 				}
 			}
 
@@ -960,10 +1005,22 @@ namespace com.tgs.assetdependencymanager.editor
 			var dependenciesBasePath = BuildDependenciesBasePath(basePath, GetDependenciesFolder());
 			BuildSelectionPlan(OriginalAssets?.ToArray(), out var folderRoots, out var fileRoots, out var selectedFiles,
 				out var selectedFileAnchorRoots);
+			selectedFiles.RemoveWhere(path => ShouldSkipAsmdefPath(path, _asmdefFilesToRemove));
+			fileRoots = fileRoots
+				.Where(path => !ShouldSkipAsmdefPath(path, _asmdefFilesToRemove))
+				.ToList();
+			foreach (var key in selectedFileAnchorRoots.Keys.ToList())
+			{
+				if (ShouldSkipAsmdefPath(key, _asmdefFilesToRemove))
+				{
+					selectedFileAnchorRoots.Remove(key);
+				}
+			}
 			var rootPaths = folderRoots.Concat(fileRoots).ToList();
 			var dependencyPaths = AssetGameDependencies
 				.Concat(AssetTGSPackageDependencies)
 				.Where(dep => !selectedFiles.Contains(dep))
+				.Where(dep => !ShouldSkipAsmdefPath(dep, _asmdefFilesToRemove))
 				.Distinct(StringComparer.OrdinalIgnoreCase)
 				.ToList();
 
@@ -1046,6 +1103,11 @@ namespace com.tgs.assetdependencymanager.editor
 
 						foreach (var filePath in EnumerateFolderAssets(rootPath))
 						{
+							if (ShouldSkipAsmdefPath(filePath, _asmdefFilesToRemove))
+							{
+								continue;
+							}
+
 							var relative = filePath.Substring(rootPath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 							var renamedRelative = RenameAsmdefFilenameInPath(relative);
 							previewItems.Add(Path.Combine(basePath, folderName, renamedRelative).Replace("\\", "/"));
@@ -1436,6 +1498,7 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			var namespaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			var asmdefPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			var asmdefFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			var rootNamespaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			var asmdefNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1451,6 +1514,13 @@ namespace com.tgs.assetdependencymanager.editor
 				}
 				else if (path.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase))
 				{
+					var normalizedAsmdefPath = NormalizePathForComparison(path);
+					asmdefPaths.Add(normalizedAsmdefPath);
+					if (ShouldSkipAsmdefPath(path, _asmdefFilesToRemove))
+					{
+						continue;
+					}
+
 					var fileName = Path.GetFileNameWithoutExtension(path);
 					if (!string.IsNullOrEmpty(fileName))
 					{
@@ -1475,6 +1545,9 @@ namespace com.tgs.assetdependencymanager.editor
 			_cachedCodeRefs = new CodeReferencesInfo
 			{
 				NamespacePatterns = BuildPatternList(namespaces),
+				AsmdefPaths = asmdefPaths
+					.OrderBy(item => item, StringComparer.OrdinalIgnoreCase)
+					.ToList(),
 				AsmdefFilePatterns = BuildPatternList(asmdefFiles),
 				RootNamespacePatterns = BuildPatternList(rootNamespaces),
 				AsmdefNamePatterns = BuildPatternList(asmdefNames)
@@ -1808,12 +1881,14 @@ namespace com.tgs.assetdependencymanager.editor
 		private class CodeReferencesInfo
 		{
 			public List<string> NamespacePatterns = new List<string>();
+			public List<string> AsmdefPaths = new List<string>();
 			public List<string> AsmdefFilePatterns = new List<string>();
 			public List<string> RootNamespacePatterns = new List<string>();
 			public List<string> AsmdefNamePatterns = new List<string>();
 
 			public bool HasAny =>
 				NamespacePatterns.Count > 0 ||
+				AsmdefPaths.Count > 0 ||
 				AsmdefFilePatterns.Count > 0 ||
 				RootNamespacePatterns.Count > 0 ||
 				AsmdefNamePatterns.Count > 0;
@@ -1836,7 +1911,7 @@ namespace com.tgs.assetdependencymanager.editor
 			}
 
 			var copiedFiles = CopySelectionToDestination(assets, destinationPath, duplicateSubFolder,
-				dependenciesFolder, keepFolderStructure, true);
+				dependenciesFolder, keepFolderStructure, true, _asmdefFilesToRemove);
 			ApplyCodeReferenceRenames(copiedFiles);
 			RemapGuids(copiedFiles.ToList());
 			AssetDatabase.SaveAssets();
@@ -1849,7 +1924,7 @@ namespace com.tgs.assetdependencymanager.editor
 		}
 
 		private static HashSet<string> CopySelectionToDestination(Object[] assets, string destinationPath, string duplicateSubFolder,
-			string dependenciesFolder, bool keepFolderStructure, bool includeDependencies)
+			string dependenciesFolder, bool keepFolderStructure, bool includeDependencies, HashSet<string> asmdefPathsToSkip = null)
 		{
 			var copiedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 			if (assets == null || assets.Length == 0)
@@ -1859,12 +1934,24 @@ namespace com.tgs.assetdependencymanager.editor
 
 			BuildSelectionPlan(assets, out var folderRoots, out var fileRoots, out var selectedFiles,
 				out var selectedFileAnchorRoots);
+			selectedFiles.RemoveWhere(path => ShouldSkipAsmdefPath(path, asmdefPathsToSkip));
+			fileRoots = fileRoots
+				.Where(path => !ShouldSkipAsmdefPath(path, asmdefPathsToSkip))
+				.ToList();
+			foreach (var key in selectedFileAnchorRoots.Keys.ToList())
+			{
+				if (ShouldSkipAsmdefPath(key, asmdefPathsToSkip))
+				{
+					selectedFileAnchorRoots.Remove(key);
+				}
+			}
 			var basePath = BuildDestinationBasePath(destinationPath, duplicateSubFolder);
 			var dependenciesBasePath = BuildDependenciesBasePath(basePath, dependenciesFolder);
 			var dependencies = includeDependencies && selectedFiles.Count > 0
 				? GetGameAndTGSPackageDependencies(selectedFiles.ToArray())
 					.Where(dep => !selectedFiles.Contains(dep))
 					.Where(dep => !AssetDatabase.IsValidFolder(dep))
+					.Where(dep => !ShouldSkipAsmdefPath(dep, asmdefPathsToSkip))
 					.ToList()
 				: new List<string>();
 			Dictionary<string, string> selectedFileRoots = null;
@@ -1908,12 +1995,12 @@ namespace com.tgs.assetdependencymanager.editor
 			{
 				foreach (var folderRoot in folderRoots)
 				{
-					CopyFolderRoot(folderRoot, basePath, copiedFiles, false, string.Empty);
+					CopyFolderRoot(folderRoot, basePath, copiedFiles, false, string.Empty, asmdefPathsToSkip);
 				}
 
 				foreach (var fileRoot in fileRoots)
 				{
-					CopyFileRoot(fileRoot, basePath, copiedFiles, false, string.Empty);
+					CopyFileRoot(fileRoot, basePath, copiedFiles, false, string.Empty, asmdefPathsToSkip);
 				}
 			}
 
@@ -1957,9 +2044,14 @@ namespace com.tgs.assetdependencymanager.editor
 		}
 
 		private static void CopyFileRoot(string sourcePath, string basePath, HashSet<string> copiedFiles,
-			bool keepFolderStructure, string keepStructureRoot)
+			bool keepFolderStructure, string keepStructureRoot, HashSet<string> asmdefPathsToSkip = null)
 		{
 			if (string.IsNullOrEmpty(sourcePath))
+			{
+				return;
+			}
+
+			if (ShouldSkipAsmdefPath(sourcePath, asmdefPathsToSkip))
 			{
 				return;
 			}
@@ -1990,7 +2082,7 @@ namespace com.tgs.assetdependencymanager.editor
 		}
 
 		private static void CopyFolderRoot(string folderPath, string basePath, HashSet<string> copiedFiles,
-			bool keepFolderStructure, string keepStructureRoot)
+			bool keepFolderStructure, string keepStructureRoot, HashSet<string> asmdefPathsToSkip = null)
 		{
 			if (string.IsNullOrEmpty(folderPath))
 			{
@@ -2011,6 +2103,11 @@ namespace com.tgs.assetdependencymanager.editor
 			{
 				if (EditorUtility.DisplayCancelableProgressBar("Duplicating...", "Copying " + Path.GetFileName(folderAssets[i]),
 						(float)i / total)) throw new OperationCanceledException();
+				if (ShouldSkipAsmdefPath(folderAssets[i], asmdefPathsToSkip))
+				{
+					continue;
+				}
+
 				string destPath;
 				if (keepFolderStructure)
 				{
@@ -2451,12 +2548,14 @@ namespace com.tgs.assetdependencymanager.editor
 			var selectedPathInner = Path.Combine(selectedPath, EXPORTED_PACKAGE_SUFFIX);
 			try
 			{
+				var window = GetOpenWindow();
+				var asmdefPathsToSkip = window != null ? window._asmdefFilesToRemove : null;
+
 				if (!Directory.Exists(selectedPathInner))
 					Directory.CreateDirectory(selectedPathInner);
 
 				var copiedFiles = CopySelectionToDestination(assets.ToArray(), selectedPathInner, duplicateSubFolder,
-					dependenciesFolder, keepFolderStructure, true);
-				var window = GetOpenWindow();
+					dependenciesFolder, keepFolderStructure, true, asmdefPathsToSkip);
 				if (window != null)
 				{
 					window.ApplyCodeReferenceRenames(copiedFiles);
@@ -2755,6 +2854,27 @@ namespace com.tgs.assetdependencymanager.editor
 			files.AddRange(Directory.GetFiles(path).Where(f => criteria == null || criteria(f)));
 			foreach (var dir in Directory.GetDirectories(path)) GetFilesRecursively(dir, criteria, files);
 			return files;
+		}
+
+		private static bool ShouldSkipAsmdefPath(string path, HashSet<string> asmdefPathsToSkip)
+		{
+			if (asmdefPathsToSkip == null || asmdefPathsToSkip.Count == 0 || string.IsNullOrEmpty(path))
+			{
+				return false;
+			}
+
+			if (!path.EndsWith(".asmdef", StringComparison.OrdinalIgnoreCase))
+			{
+				return false;
+			}
+
+			var normalizedPath = NormalizePathForComparison(path);
+			return asmdefPathsToSkip.Contains(normalizedPath);
+		}
+
+		private static string NormalizePathForComparison(string path)
+		{
+			return string.IsNullOrEmpty(path) ? string.Empty : path.Replace("\\", "/");
 		}
 		
 		public static void ExtractZip(string packagePath, string destinationPath)
