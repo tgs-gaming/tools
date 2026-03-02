@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.8 - 2026-03-02
+- Added optional .asmdef removal during copy
+
+
 ## 1.1.7 - 2026-02-24
 - Fixed .skel.bytes duplicate
 
