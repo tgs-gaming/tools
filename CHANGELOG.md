@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.6 - 2026-03-02
+- Fixed background instance when it shouldn't
+- Added timeout settings for git operations (default = 5 seconds)
+
+
 ## 2.1.5 - 2026-02-24
 - Added individual package refresh buttons
 - Fixed 'Tag this version' not pushing branch
