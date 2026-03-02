@@ -132,6 +132,15 @@ namespace com.tgs.packagemanager.editor
                 _busyRecoveryDelaySeconds = Math.Max(0f, busyRecoveryDelay);
                 EditorPrefs.SetFloat(PrefsBusyRecoveryDelay, (float)_busyRecoveryDelaySeconds);
             }
+
+            EditorGUI.BeginChangeCheck();
+            var networkTimeout = EditorGUILayout.IntField("Request Timeout (Seconds)", _networkTimeoutSeconds);
+            if (EditorGUI.EndChangeCheck())
+            {
+                _networkTimeoutSeconds = Mathf.Max(1, networkTimeout);
+                EditorPrefs.SetInt(PrefsNetworkTimeoutSeconds, _networkTimeoutSeconds);
+                _client?.SetTimeoutSeconds(_networkTimeoutSeconds);
+            }
         }
 
         private void DrawRepositoriesPathSettings()

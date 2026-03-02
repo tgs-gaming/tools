@@ -9,10 +9,17 @@ namespace com.tgs.packagemanager.editor
     {
         private const string ApiBase = "https://api.github.com/repos";
         private readonly string _userAgent;
+        private int _timeoutSeconds;
 
-        public GitHubContentsClient(string userAgent)
+        public GitHubContentsClient(string userAgent, int timeoutSeconds = 5)
         {
             _userAgent = string.IsNullOrEmpty(userAgent) ? "CompanyToolsPackageManager" : userAgent;
+            SetTimeoutSeconds(timeoutSeconds);
+        }
+
+        public void SetTimeoutSeconds(int timeoutSeconds)
+        {
+            _timeoutSeconds = Math.Max(1, timeoutSeconds);
         }
 
         public IEnumerator GetContents(string owner, string repo, string path, string reference, string token,
@@ -167,6 +174,7 @@ namespace com.tgs.packagemanager.editor
         private UnityWebRequest CreateRequest(string url, string token, bool isApi)
         {
             var request = UnityWebRequest.Get(url);
+            request.timeout = _timeoutSeconds;
             request.SetRequestHeader("User-Agent", _userAgent);
 
             if (isApi)

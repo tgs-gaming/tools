@@ -25,12 +25,14 @@ namespace com.tgs.packagemanager.editor
         private const string PrefsRepositoryTokenPrefix = "CTPM_RepoToken_";
         private const string PrefsRunInBackground = "CTPM_RunInBackground";
         private const string PrefsUseCachedStateOnOpen = "CTPM_UseCachedStateOnOpen";
+        private const string PrefsNetworkTimeoutSeconds = "CTPM_NetworkTimeoutSeconds";
         private const string WindowStateFileName = "window-state.json";
 
         private const string UserAgent = "CompanyToolsPackageManager/1.0";
         private const string PackageBranchPrefix = "tool/";
         private const double DefaultAutoUpdateIntervalSeconds = 600.0;
         private const double BusyRecoveryDelaySeconds = 3.0;
+        private const int DefaultNetworkTimeoutSeconds = 5;
         private const double LocalGitProbeIntervalSeconds = 20.0;
         private const double RefreshUnlockDelaySeconds = 2.0;
         private const string DefaultRepositoriesPathRelative = "../../repositories.json";
@@ -97,6 +99,7 @@ namespace com.tgs.packagemanager.editor
         private bool _lastPackageRefreshSucceeded;
         private bool _runInBackground;
         private bool _useCachedStateOnOpen;
+        private int _networkTimeoutSeconds;
         private PackageListSnapshot _packageListSnapshot;
         private readonly Dictionary<string, List<string>> _repositoryTags = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         private List<RepositoryConfig> _repositories = new List<RepositoryConfig>();
@@ -116,7 +119,8 @@ namespace com.tgs.packagemanager.editor
 
         private void OnEnable()
         {
-            _client = new GitHubContentsClient(UserAgent);
+            _networkTimeoutSeconds = Mathf.Max(1, EditorPrefs.GetInt(PrefsNetworkTimeoutSeconds, DefaultNetworkTimeoutSeconds));
+            _client = new GitHubContentsClient(UserAgent, _networkTimeoutSeconds);
             _installer = new PackageInstaller(_client);
             titleContent = new GUIContent("TGS Package Manager", GetPackageManagerIcon());
             _autoUpdateIntervalSeconds = EditorPrefs.GetFloat(PrefsAutoUpdateInterval, (float)DefaultAutoUpdateIntervalSeconds);
@@ -222,11 +226,11 @@ namespace com.tgs.packagemanager.editor
             if (EditorApplication.isPlayingOrWillChangePlaymode)
                 return;
             
-            EditorApplication.delayCall += RequestBackgroundDuplicateCleanup;
             
             if (!IsBackgroundExecutionAllowedByPrefs())
                 return;
 
+            EditorApplication.delayCall += RequestBackgroundDuplicateCleanup;
             EditorApplication.delayCall += RequestBackgroundSynchronize;
         }
 
@@ -237,7 +241,7 @@ namespace com.tgs.packagemanager.editor
                 return;
             }
 
-            var window = GetOrCreateSyncWindow();
+            var window = GetOrCreateSyncWindow(IsBackgroundExecutionAllowedByPrefs());
             window?.SynchronizeManagedPackageDuplicatesOnly();
         }
 
@@ -253,11 +257,11 @@ namespace com.tgs.packagemanager.editor
                 return;
             }
 
-            var window = GetOrCreateSyncWindow();
+            var window = GetOrCreateSyncWindow(true);
             window?.SynchronizeAfterCompile();
         }
 
-        private static ToolsPackageManagerWindow GetOrCreateSyncWindow()
+        private static ToolsPackageManagerWindow GetOrCreateSyncWindow(bool allowCreate)
         {
             var windows = Resources.FindObjectsOfTypeAll<ToolsPackageManagerWindow>();
             foreach (var window in windows)
@@ -268,8 +272,14 @@ namespace com.tgs.packagemanager.editor
                 }
             }
 
+            if (!allowCreate)
+            {
+                return null;
+            }
+
             if (_backgroundInstance == null)
             {
+                Debug.Log($"[{nameof(ToolsPackageManagerWindow)}] Creating background instance");
                 _backgroundInstance = CreateInstance<ToolsPackageManagerWindow>();
                 _backgroundInstance.hideFlags = HideFlags.HideAndDontSave;
             }
@@ -423,7 +433,7 @@ namespace com.tgs.packagemanager.editor
 
         private bool CanRunTasksForThisInstance()
         {
-            return !IsBackgroundOnlyInstance() || !_runInBackground;
+            return !IsBackgroundOnlyInstance() || _runInBackground;
         }
 
         private void SetRunInBackground(bool enabled)
@@ -432,7 +442,7 @@ namespace com.tgs.packagemanager.editor
             PlayerPrefs.SetInt(PrefsRunInBackground, enabled ? 1 : 0);
             PlayerPrefs.Save();
 
-            if (enabled)
+            if (!enabled)
             {
                 _refreshAfterCompilePending = false;
                 if (_backgroundInstance != null && !ReferenceEquals(_backgroundInstance, this))

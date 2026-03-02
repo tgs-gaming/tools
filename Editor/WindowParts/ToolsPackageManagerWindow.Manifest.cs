@@ -30,6 +30,7 @@ namespace com.tgs.packagemanager.editor
             var packageLookup = new Dictionary<string, PackageEntry>(StringComparer.OrdinalIgnoreCase);
             var repositoryTagShas = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
             var repositoryBranchShas = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+            var timedOutRepositories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var repository in _repositories)
             {
@@ -52,6 +53,11 @@ namespace com.tgs.packagemanager.editor
                 if (!string.IsNullOrEmpty(tagError))
                 {
                     RecordRepositoryAccessError(repository, tagError, "Tags");
+                    if (IsTimeoutError(tagError))
+                    {
+                        MarkRepositoryTimedOutForCurrentSync(repository, timedOutRepositories, "Tags");
+                        continue;
+                    }
                     tags = new List<string>();
                 }
                 else if (tags == null)
@@ -76,6 +82,10 @@ namespace com.tgs.packagemanager.editor
                 if (!string.IsNullOrEmpty(branchError))
                 {
                     RecordRepositoryAccessError(repository, branchError, "Branches");
+                    if (IsTimeoutError(branchError))
+                    {
+                        MarkRepositoryTimedOutForCurrentSync(repository, timedOutRepositories, "Branches");
+                    }
                     continue;
                 }
 
@@ -156,6 +166,12 @@ namespace com.tgs.packagemanager.editor
                     continue;
                 }
 
+                if (IsRepositoryTimedOutForCurrentSync(repository, timedOutRepositories))
+                {
+                    SetConfigError(package, "Skipped for this refresh because the repository timed out.");
+                    continue;
+                }
+
                 var tags = GetRepositoryTags(repository);
                 var tagShas = GetRepositoryRefShas(repository, repositoryTagShas);
                 var branchShas = GetRepositoryRefShas(repository, repositoryBranchShas);
@@ -167,6 +183,10 @@ namespace com.tgs.packagemanager.editor
                 }
 
                 yield return LoadPackageMetadata(repository, package, tags);
+                if (IsTimeoutError(package.loadError))
+                {
+                    MarkRepositoryTimedOutForCurrentSync(repository, timedOutRepositories, "Package metadata");
+                }
                 CachePackageMetadataIfLoaded(package, repository, tags, tagShas, branchShas);
                 ApplyLocalPackageOverrides(package);
                 Repaint();
@@ -327,7 +347,7 @@ namespace com.tgs.packagemanager.editor
             var typeArgument = loadTags ? "--tags" : "--heads";
             var refPrefix = loadTags ? "refs/tags/" : "refs/heads/";
             if (!TryGetRemoteRefs(repository, repoUrl, token, typeArgument, refPrefix, out var refs, out var refShas,
-                    out var error))
+                    out var error, _networkTimeoutSeconds))
             {
                 onError?.Invoke(error);
                 yield break;
@@ -723,6 +743,7 @@ namespace com.tgs.packagemanager.editor
         {
             var repoUrl = GetRepositoryUrl(repository);
             if (!TryLoadPackageJsonViaGit(repoUrl, branchRef, token, out var packageJson, out var error,
+                    _networkTimeoutSeconds,
                     out var branchNotFound, out var packageJsonMissing))
             {
                 if (branchNotFound)
@@ -755,7 +776,8 @@ namespace com.tgs.packagemanager.editor
         }
 
         private static bool TryLoadPackageJsonViaGit(string repoUrl, string branchRef, string token,
-            out string packageJson, out string error, out bool branchNotFound, out bool packageJsonMissing)
+            out string packageJson, out string error, int timeoutSeconds, out bool branchNotFound,
+            out bool packageJsonMissing)
         {
             packageJson = null;
             error = null;
@@ -779,7 +801,7 @@ namespace com.tgs.packagemanager.editor
             {
                 Directory.CreateDirectory(tempDirectory);
 
-                if (!TryRunGitCommand(tempDirectory, "init", string.Empty, out _, out var initError))
+                if (!TryRunGitCommand(tempDirectory, "init", string.Empty, out _, out var initError, timeoutSeconds))
                 {
                     error = string.IsNullOrWhiteSpace(initError) ? "Failed to initialize git." : initError;
                     return false;
@@ -788,7 +810,8 @@ namespace com.tgs.packagemanager.editor
                 var authenticatedUrl = BuildAuthenticatedRepoUrl(repoUrl.Trim(), token);
                 var fetchArguments = "fetch --depth 1 " + QuoteGitArgument(authenticatedUrl) + " " +
                     QuoteGitArgument(branchRef);
-                if (!TryRunGitCommand(tempDirectory, fetchArguments, string.Empty, out _, out var fetchError))
+                if (!TryRunGitCommand(tempDirectory, fetchArguments, string.Empty, out _, out var fetchError,
+                        timeoutSeconds))
                 {
                     if (IsGitBranchNotFoundError(fetchError))
                     {
@@ -800,7 +823,8 @@ namespace com.tgs.packagemanager.editor
                 }
 
                 var showArguments = "show " + QuoteGitArgument("FETCH_HEAD:package.json");
-                if (!TryRunGitCommand(tempDirectory, showArguments, string.Empty, out var jsonOutput, out var showError))
+                if (!TryRunGitCommand(tempDirectory, showArguments, string.Empty, out var jsonOutput,
+                        out var showError, timeoutSeconds))
                 {
                     if (IsGitPathNotFoundError(showError))
                     {
@@ -974,7 +998,7 @@ namespace com.tgs.packagemanager.editor
 
         private static bool TryGetRemoteRefs(RepositoryConfig repository, string repoUrl, string token,
             string typeArgument, string refPrefix, out List<string> refs, out Dictionary<string, string> refShas,
-            out string error)
+            out string error, int timeoutSeconds)
         {
             refs = new List<string>();
             refShas = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -989,7 +1013,7 @@ namespace com.tgs.packagemanager.editor
             var authenticatedUrl = BuildAuthenticatedRepoUrl(repoUrl.Trim(), token);
             var argumentUrl = QuoteGitArgument(authenticatedUrl);
             var arguments = "ls-remote " + typeArgument + " " + argumentUrl;
-            if (!TryRunGitCommand(arguments, string.Empty, out var output, out error))
+            if (!TryRunGitCommand(arguments, string.Empty, out var output, out error, timeoutSeconds))
             {
                 return false;
             }
@@ -1048,13 +1072,14 @@ namespace com.tgs.packagemanager.editor
             return true;
         }
 
-        private static bool TryRunGitCommand(string arguments, string token, out string output, out string error)
+        private static bool TryRunGitCommand(string arguments, string token, out string output, out string error,
+            int timeoutSeconds = 0)
         {
-            return TryRunGitCommand(Path.GetTempPath(), arguments, token, out output, out error);
+            return TryRunGitCommand(Path.GetTempPath(), arguments, token, out output, out error, timeoutSeconds);
         }
 
         private static bool TryRunGitCommand(string workingDirectory, string arguments, string token, out string output,
-            out string error)
+            out string error, int timeoutSeconds = 0)
         {
             output = null;
             error = null;
@@ -1081,9 +1106,31 @@ namespace com.tgs.packagemanager.editor
                         return false;
                     }
 
+                    if (timeoutSeconds > 0)
+                    {
+                        var timeoutMilliseconds = timeoutSeconds * 1000;
+                        if (!process.WaitForExit(timeoutMilliseconds))
+                        {
+                            try
+                            {
+                                process.Kill();
+                            }
+                            catch
+                            {
+                                // Ignore kill failures.
+                            }
+
+                            error = "Git command timed out after " + timeoutSeconds + " seconds.";
+                            return false;
+                        }
+                    }
+                    else
+                    {
+                        process.WaitForExit();
+                    }
+
                     var stdOut = process.StandardOutput.ReadToEnd();
                     var stdErr = process.StandardError.ReadToEnd();
-                    process.WaitForExit();
 
                     if (process.ExitCode != 0)
                     {
@@ -1100,6 +1147,77 @@ namespace com.tgs.packagemanager.editor
                 error = ex.Message;
                 return false;
             }
+        }
+
+        private static bool IsTimeoutError(GitHubRequestError error)
+        {
+            return error != null && IsTimeoutError(error.message);
+        }
+
+        private static bool IsTimeoutError(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error))
+            {
+                return false;
+            }
+
+            return error.IndexOf("timed out", StringComparison.OrdinalIgnoreCase) >= 0
+                || error.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string BuildRepositorySyncKey(RepositoryConfig repository)
+        {
+            if (repository == null)
+            {
+                return string.Empty;
+            }
+
+            if (!string.IsNullOrWhiteSpace(repository.id))
+            {
+                return repository.id.Trim();
+            }
+
+            return string.IsNullOrWhiteSpace(repository.url) ? string.Empty : repository.url.Trim();
+        }
+
+        private static bool IsRepositoryTimedOutForCurrentSync(RepositoryConfig repository,
+            HashSet<string> timedOutRepositories)
+        {
+            if (repository == null || timedOutRepositories == null || timedOutRepositories.Count == 0)
+            {
+                return false;
+            }
+
+            var key = BuildRepositorySyncKey(repository);
+            return !string.IsNullOrEmpty(key) && timedOutRepositories.Contains(key);
+        }
+
+        private void MarkRepositoryTimedOutForCurrentSync(RepositoryConfig repository,
+            HashSet<string> timedOutRepositories, string context)
+        {
+            if (repository == null || timedOutRepositories == null)
+            {
+                return;
+            }
+
+            var key = BuildRepositorySyncKey(repository);
+            if (string.IsNullOrEmpty(key) || !timedOutRepositories.Add(key))
+            {
+                return;
+            }
+
+            var repoLabel = BuildRepositoryAccessLabel(repository);
+            if (string.IsNullOrEmpty(repoLabel))
+            {
+                repoLabel = "repository";
+            }
+
+            _statusMessage = "Timeout while syncing " + repoLabel + ". Skipping remaining packages from this repository for this refresh.";
+            UnityEngine.Debug.Log("TGS Package Manager: repository skipped due to timeout during " + context + ": " + repoLabel
+                + " (timeout=" + _networkTimeoutSeconds + "s)");
+            RecordRepositoryAccessError(repository,
+                "Timeout after " + _networkTimeoutSeconds + "s. Remaining packages were skipped for this refresh.",
+                context);
         }
 
         private static string QuoteGitArgument(string value)
