@@ -1,0 +1,19 @@
+{
+  "name": "com.tgs.mcp-for-unity",
+  "version": "1.0.0",
+  "displayName": "MCP for Unity",
+  "description": "An adapted version of the CoplayDev 'MCP for Unity' plugin, ported to Unity 2020.3. Original repo: https://github.com/CoplayDev/unity-mcp/tree/main",
+  "unity": "2020.3",
+  "required": false,
+  "dependencies": {
+    "jillejr.newtonsoft.json-for-unity": "13.0.102",
+    "com.unity.test-framework": "1.1.31"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tgs-gaming/tools"
+  },
+  "author": {
+    "name": "Angelo Lee"
+  }
+}
