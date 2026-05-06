@@ -2,6 +2,6 @@ Library/
 Temp/
 Logs/
 Obj/
-Build/
-Builds/
+/Build/
+/Builds/
 UserSettings/
