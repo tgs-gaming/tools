@@ -227,7 +227,7 @@ namespace com.tgs.mcpforunity.editor.Helpers
             }
 
             // Default to PyPI package (avoids Windows long path issues with git clone)
-            string version = GetPackageVersion();
+            string version = GetServerVersion();
             if (version == "unknown")
             {
                 // Fall back to latest PyPI version so configs remain valid in test scenarios
@@ -627,6 +627,33 @@ namespace com.tgs.mcpforunity.editor.Helpers
             catch (Exception ex)
             {
                 McpLog.Warn($"Failed to get package version: {ex.Message}");
+                return "unknown";
+            }
+        }
+
+        /// <summary>
+        /// Gets the Python server version for PyPI pinning.
+        /// Reads "mcpServerVersion" from package.json if present (allows decoupling the Unity
+        /// package version from the Python server version), otherwise falls back to "version".
+        /// </summary>
+        private static string GetServerVersion()
+        {
+            try
+            {
+                var packageJson = GetPackageJson();
+                if (packageJson == null)
+                    return "unknown";
+
+                string serverVersion = packageJson["mcpServerVersion"]?.ToString();
+                if (!string.IsNullOrEmpty(serverVersion))
+                    return serverVersion;
+
+                string version = packageJson["version"]?.ToString();
+                return string.IsNullOrEmpty(version) ? "unknown" : version;
+            }
+            catch (Exception ex)
+            {
+                McpLog.Warn($"Failed to get server version: {ex.Message}");
                 return "unknown";
             }
         }

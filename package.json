@@ -1,6 +1,7 @@
 {
   "name": "com.tgs.mcp-for-unity",
   "version": "1.0.0",
+  "mcpServerVersion": "9.6.8",
   "displayName": "MCP for Unity",
   "description": "An adapted version of the CoplayDev 'MCP for Unity' plugin, ported to Unity 2020.3. Original repo: https://github.com/CoplayDev/unity-mcp/tree/main",
   "unity": "2020.3",
