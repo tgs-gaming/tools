@@ -1,48 +1,15 @@
-# MCP for Unity — Editor Plugin Guide
+# MCP for Unity
 
-Use this guide to configure and run MCP for Unity inside the Unity Editor. Installation is covered elsewhere; this document focuses on the Editor window, client configuration, and troubleshooting.
-
-## Open the window
-- Unity menu: Window > MCP for Unity
-
-The window has four areas: Server Status, Unity Bridge, MCP Client Configuration, and Script Validation.
+This is an adapted version of the CoplayDev 'MCP for Unity' plugin, ported to Unity 2020.3. Original repo: https://github.com/CoplayDev/unity-mcp/tree/main
 
 ---
 
 ## Quick start
-1. Open Window > MCP for Unity.
-2. Click “Auto-Setup”.
-3. If prompted:
-    - Select the packaged server folder (`Server`) if you want to run the bundled implementation.
-    - Install Python and/or uv/uvx if missing so the server can be managed locally.
-    - For Claude Code, ensure the `claude` CLI is installed.
-4. Click “Start Bridge” if the Unity Bridge shows “Stopped”.
-5. Use your MCP client (Cursor, VS Code, OpenClaw, Claude Code) to connect.
-
----
-
-## Server Status
-- Status dot and label:
-    - Installed / Installed (Embedded) / Not Installed.
-- Mode and ports:
-    - Mode: Auto or Standard.
-    - Ports: Unity (varies; shown in UI), MCP 6500.
-- Actions:
-    - Auto-Setup: Registers/updates your selected MCP client(s), ensures bridge connectivity. Shows “Connected ✓” after success.
-    - Rebuild MCP Server: Rebuilds the Python based MCP server
-    - Select server folder…: Choose the local `Server` folder (dev only; usually not needed when using uvx).
-    - Verify again: Re-checks server presence.
-    - If Python isn’t detected, use “Open Install Instructions”.
-- HTTP Server Command foldout:
-    - Expands to display the exact `uvx` command Unity will run.
-    - Includes a copy button and the “Start Local HTTP Server” action so you can launch or reuse the command elsewhere.
-
----
-
-## Unity Bridge
-- Shows Running or Stopped with a status dot.
-- Start/Stop Bridge button toggles the Unity bridge process used by MCP clients to talk to Unity.
-- Tip: After Auto-Setup, the bridge may auto-start in Auto mode.
+1. Open Window > MCP for Unity > Local Setup Window.
+2. Install Python and/or uv/uvx if missing so the server can be managed locally.
+3. Open Window > MCP for Unity > Toggle MCP Window.
+4. Configure your AI client (Cursor, VS Code, OpenClaw, Claude Code).
+5. Click “Start Server”.
 
 ---
 
